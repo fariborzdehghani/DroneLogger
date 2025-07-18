@@ -1,0 +1,279 @@
+﻿<Window x:Class="DroneLogger.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:DroneLogger"
+        xmlns:ScottPlot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        Title="MainWindow" Height="953" Width="1386" WindowStartupLocation="CenterScreen" Closed="Window_Closed" Loaded="Window_Loaded" WindowState="Maximized" KeyDown="Window_KeyDown" Icon="/control.png">
+    <!-- Ensure SkiaSharp is properly referenced -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="900"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Orientation="Horizontal" Margin="10 10 10 0" Grid.Row="0">
+                <Label Content="Connection Type:" VerticalAlignment="Center" HorizontalContentAlignment="Right" Width="100"/>
+                <ComboBox x:Name="cmb_ConnectionType" Width="120" Margin="0,0,7,0" SelectionChanged="cmb_ConnectionType_SelectionChanged">
+                    <ComboBoxItem Content="Serial" IsSelected="True"/>
+                    <ComboBoxItem Content="Radio"/>
+                </ComboBox>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="10 10 10 0" Grid.Row="1" x:Name="radioControls">
+                <Label Content="Transmitter Port:" VerticalAlignment="Center" HorizontalContentAlignment="Right" Width="100" />
+                <ComboBox x:Name="cmb_TransmitPort" Width="120" Margin="0,0,7,0"/>
+                <Button x:Name="btn_RefreshTransmitPortsList" Content="Refresh" Width="100" Click="btn_RefreshTransmitPortsList_Click" Margin="0,0,7,0"/>
+                <Button x:Name="btn_TransmitPortConnect" Content="Connect" Width="100" Click="btn_TransmitPortConnect_Click" Margin="0,0,7,0"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="10 10 10 0" Grid.Row="2">
+                <Label Content="Logger Port:" VerticalAlignment="Center" Width="100" HorizontalContentAlignment="Right" />
+                <ComboBox x:Name="cmb_LogPort" Width="120" Margin="0,0,7,0"/>
+                <Button x:Name="btn_RefreshLogPortsList" Content="Refresh" Width="100" Click="btn_RefreshLogPortsList_Click" Margin="0,0,7,0"/>
+                <Button x:Name="btn_LogPortConnect" Content="Connect" Width="100" Click="btn_LogPortConnect_Click" Margin="0,0,7,0"/>
+                <Button x:Name="btn_SetConfig" Content="Set Config" Width="100" Margin="0,0,7,0" HorizontalAlignment="Center" Click="btn_SetConfig_Click"/>
+                <Button x:Name="btn_Power" Content="Power" Width="100" Margin="0,0,7,0" IsDefault="True" HorizontalAlignment="Center" Click="btn_Power_Click"/>
+                <ToggleButton x:Name="btnPausePlots" Content="Pause" Width="100" Click="btnPausePlots_Clicked" Margin="0,0,7,0"/>
+                <Button x:Name="btn_ThrottleIncrease" Content="▲" Width="50" Click="btn_ThrottleIncrease_Click" ToolTip="Increase Throttle (Up Arrow)" Margin="0,0,7,0" />
+                <Button x:Name="btn_ThrottleDecrease" Content="▼" Width="50" Click="btn_ThrottleDecrease_Click" ToolTip="Decrease Throttle (Down Arrow)" />
+            </StackPanel>
+
+            <StackPanel Orientation="Vertical" Grid.Row="3">
+                <StackPanel Orientation="vertical"  >
+                    <StackPanel Orientation="Horizontal" Margin="10 10 10 0">
+                        <Label Content="Config:" Width="70" HorizontalContentAlignment="Right" />
+                        <Label Content="Throttle:" Width="110" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Throttle" Text="30" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Min Speed:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_MinSpeed" Text="0" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Max Speed:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_MaxSpeed" Text="50" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Max Angle:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_MaxAngle" Text="30" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Default Throttle:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_DefaultThrottle" Text="70" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="10 10 10 0">
+                        <Label Content="Start Threshold:" Width="180" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_PID_StartThreshold" Text="1" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Max I Part:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_PID_MaxIPart" Text="1" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Max PID Output:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_PID_MaxOutput" Text="10" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="PID start throttle:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_PID_StartThrottle" Text="60" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="10 20 10 0">
+                        <Label Content="Target:" Width="70" HorizontalContentAlignment="Right" />
+                        <Label Content="Pitch:" Width="110" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_TargetPitch" Text="0" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Roll:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_TargetRoll" Text="0" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="10 20 10 0">
+                        <Label Content="Roll PID:" Width="70" HorizontalContentAlignment="Right" />
+                        <Label Content="Kp:" Width="110" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Roll_Kp" Text="0.5" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Ki:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Roll_Ki" Text="0.0001" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Kd:" Width="80" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Roll_Kd" Text="0.05" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="10 10 10 0">
+                        <Label Content="Pitch PID:" Width="70" HorizontalContentAlignment="Right" />
+                        <Label Content="Kp:" Width="110" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Pitch_Kp" Text="0.5" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Ki:" Width="100" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Pitch_Ki" Text="0.0001" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                        <Label Content="Kd:" Width="80" HorizontalContentAlignment="Right" />
+                        <TextBox x:Name="txt_Pitch_Kd" Text="0.05" Width="50" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,10,0" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 10 10 0" Grid.Row="4">
+                    <Label Content="Roll:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Roll" Content="0" Width="50"/>
+                    <Label Content="Pitch:" Width="100" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Pitch" Content="0" Width="50"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 10 10 0">
+                    <Label Content="Motor1:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor1_Value" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                    <Label Content="Motor2:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor2_Value" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 0 10 0">
+                    <Label Content="PID Value:" Width="100" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Motor1_PID" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                    <Label Content="PID Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor2_PID" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 0 10 0" >
+                    <Label Content="Final Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor1_ModifiedValue" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                    <Label Content="Final Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor2_ModifiedValue" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 10 10 0" >
+                    <Label Content="Motor4:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor4_Value" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                    <Label Content="Motor3:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor3_Value" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 0 10 0">
+                    <Label Content="PID Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor4_PID" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                    <Label Content="PID Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor3_PID" Content="0" Width="50" HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10 0 10 0" >
+                    <Label Content="Final Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor4_ModifiedValue" Content="0" Width="50" />
+                    <Label Content="Final Value:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Motor3_ModifiedValue" Content="0" Width="50" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10,10,10,0">
+                    <Label Content="PID Roll:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label Content="P:" Width="50" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Roll_P" Content="0.00" Width="40" ToolTip="Proportional Term"/>
+                    <Label Content="I:" Width="50" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Roll_I" Content="0.00" Width="40" ToolTip="Integral Term"/>
+                    <Label Content="D:" Width="50" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Roll_D" Content="0.00" Width="40" ToolTip="Derivative Term"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10,5,10,0">
+                    <Label Content="PID Pitch:" Width="100" HorizontalContentAlignment="Right" />
+                    <Label Content="P:" Width="50" HorizontalContentAlignment="Right" />
+                    <Label x:Name="lbl_Pitch_P" Content="0.00" Width="40" HorizontalAlignment="Center" ToolTip="Proportional Term"/>
+                    <Label Content="I:" Width="50" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Pitch_I" Content="0.00" Width="40" HorizontalAlignment="Center" ToolTip="Integral Term"/>
+                    <Label Content="D:" Width="50" HorizontalContentAlignment="Right"/>
+                    <Label x:Name="lbl_Pitch_D" Content="0.00" Width="40" HorizontalAlignment="Center" ToolTip="Derivative Term" VerticalContentAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Vertical" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Log controls -->
+            <StackPanel Orientation="Horizontal" Margin="10,10,10,0" Grid.Row="4">
+                <Button x:Name="btn_ClearLog" Content="Clear Log" Width="70" Click="btn_ClearLog_Click" Margin="0,0,7,0"/>
+                <CheckBox x:Name="chk_GeneralLog" Content="General Log" IsChecked="True" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                <CheckBox x:Name="chk_LogData" Content="Data Log" VerticalAlignment="Center" IsChecked="True" />
+            </StackPanel>
+
+            <!-- Log output with ScrollViewer -->
+            <DockPanel Grid.Row="5" Margin="10,10,10,10">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <RichTextBox x:Name="txt_Log">
+                        <FlowDocument>
+                            <Paragraph>
+                                <Run Text=""/>
+                            </Paragraph>
+                        </FlowDocument>
+                    </RichTextBox>
+                </ScrollViewer>
+            </DockPanel>
+
+        </Grid>
+
+        <StackPanel Orientation="Vertical" Grid.Column="1">
+            <StackPanel Orientation="Horizontal">
+                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Margin="0,10,10,0" Width="190" Height="190">
+                    <Canvas Width="180" Height="180">
+                        <Rectangle x:Name="Horizon" Width="180" Height="20" Fill="SkyBlue" Canvas.Top="80" />
+                        <Line X1="0" Y1="90" X2="180" Y2="90" Stroke="Black" StrokeThickness="2" />
+                    </Canvas>
+                </Border>
+
+                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Margin="0,10,0,0" Width="190" Height="190">
+                    <Canvas x:Name="DroneCanvas" Width="180" Height="180" Background="White">
+
+                        <!-- Motor Indicators (Circles) -->
+                        <Ellipse x:Name="Motor1Circle" Width="30" Height="30" Fill="LightGreen" 
+                 Canvas.Left="25" Canvas.Top="25"/>
+                        <Ellipse x:Name="Motor2Circle" Width="30" Height="30" Fill="LightGreen" 
+                 Canvas.Left="125" Canvas.Top="25"/>
+                        <Ellipse x:Name="Motor3Circle" Width="30" Height="30" Fill="LightGreen" 
+                 Canvas.Left="125" Canvas.Top="125"/>
+                        <Ellipse x:Name="Motor4Circle" Width="30" Height="30" Fill="LightGreen" 
+                 Canvas.Left="25" Canvas.Top="125"/>
+
+                        <!-- Drone Cross -->
+                        <Line x:Name="DroneHorizontal" X1="40" Y1="40" X2="140" Y2="140" Stroke="Black" StrokeThickness="2"/>
+                        <Line x:Name="DroneVertical" X1="140" Y1="40" X2="40" Y2="140" Stroke="Black" StrokeThickness="2"/>
+
+                        <!-- Motor Labels -->
+                        <TextBlock x:Name="Motor1Speed" Text="M1" Canvas.Left="15" Canvas.Top="5"/>
+                        <TextBlock x:Name="Motor2Speed" Text="M2" Canvas.Left="140" Canvas.Top="5"/>
+                        <TextBlock x:Name="Motor3Speed" Text="M3" Canvas.Left="140" Canvas.Top="160"/>
+                        <TextBlock x:Name="Motor4Speed" Text="M4" Canvas.Left="15" Canvas.Top="160"/>
+                    </Canvas>
+                </Border>
+            </StackPanel>
+            <Border BorderBrush="Gray" BorderThickness="1" Margin="0,5,0,0">
+                <DockPanel Background="#FFE8E8E8" LastChildFill="True" Height="190">
+                    <TextBlock Text="Roll" DockPanel.Dock="Left" Margin="5" FontWeight="Bold" VerticalAlignment="Center">
+                        <TextBlock.LayoutTransform>
+                            <RotateTransform Angle="-90"/>
+                        </TextBlock.LayoutTransform>
+                    </TextBlock>
+                    <ScottPlot:WpfPlot Name="rollValuePlot"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch"
+                               MinWidth="200"/>
+                </DockPanel>
+            </Border>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Margin="0,5,0,0">
+                <DockPanel Background="#FFE8E8E8" LastChildFill="True" Height="190">
+                    <TextBlock Text="Pitch" DockPanel.Dock="Left" Margin="5" FontWeight="Bold" VerticalAlignment="Center">
+                        <TextBlock.LayoutTransform>
+                            <RotateTransform Angle="-90"/>
+                        </TextBlock.LayoutTransform>
+                    </TextBlock>
+                    <ScottPlot:WpfPlot Name="pitchValuePlot"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch"
+                               MinWidth="200"/>
+                </DockPanel>
+            </Border>
+            <Border BorderBrush="Gray" BorderThickness="1" Margin="0,5,0,0">
+                <DockPanel Background="#FFE8E8E8" LastChildFill="True" Height="190">
+                    <TextBlock Text="Roll PID" DockPanel.Dock="Left" Margin="5" FontWeight="Bold" VerticalAlignment="Center">
+                        <TextBlock.LayoutTransform>
+                            <RotateTransform Angle="-90"/>
+                        </TextBlock.LayoutTransform>
+                    </TextBlock>
+                    <ScottPlot:WpfPlot Name="rollPidPlot"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch"
+                               MinWidth="200"/>
+                </DockPanel>
+            </Border>
+            <Border BorderBrush="Gray" BorderThickness="1" Margin="0,5,0,0" Height="190">
+                <DockPanel Background="#FFE8E8E8" LastChildFill="True">
+                    <TextBlock Text="Pitch PID" DockPanel.Dock="Left" Margin="5" FontWeight="Bold" VerticalAlignment="Center">
+                        <TextBlock.LayoutTransform>
+                            <RotateTransform Angle="-90"/>
+                        </TextBlock.LayoutTransform>
+                    </TextBlock>
+                    <ScottPlot:WpfPlot Name="pitchPidPlot"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch"
+                               MinWidth="200"/>
+                </DockPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</Window>
+
