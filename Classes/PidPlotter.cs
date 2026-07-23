@@ -1,5 +1,6 @@
 using ScottPlot;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows.Threading;
 
 namespace DroneLogger.Classes
@@ -11,6 +12,14 @@ namespace DroneLogger.Classes
         private const int MAX_POINTS = 100;
         private int dataPointIndex = 0;
         private bool isPaused;
+    // configurable Y axis ranges for Vz (vertical velocity)
+    public double VzYMin { get; set; } = -5;
+    public double VzYMax { get; set; } = 5;
+        // configurable Y axis ranges for altitude and yaw (settable)
+        public double AltitudeYMin { get; set; } = 0;
+        public double AltitudeYMax { get; set; } = 100;
+        public double YawYMin { get; set; } = 0;
+        public double YawYMax { get; set; } = 360;
 
         private readonly List<double> rollPidX = new();
         private readonly List<double> rollP = new();
@@ -32,15 +41,29 @@ namespace DroneLogger.Classes
         private readonly List<double> pitchActual = new();
         private readonly List<double> pitchTarget = new();
 
-        private ScottPlot.Plottables.Scatter rollPPlot, rollIPlot, rollDPlot, rollTPlot;
-        private ScottPlot.Plottables.Scatter rollActualPlot, rollTargetPlot;
-        private ScottPlot.Plottables.Scatter pitchPPlot, pitchIPlot, pitchDPlot, pitchTPlot;
-        private ScottPlot.Plottables.Scatter pitchActualPlot, pitchTargetPlot;
+        private readonly List<double> altitudeX = new();
+        private readonly List<double> altitudeValues = new();
+    private readonly List<double> vzX = new();
+    private readonly List<double> vzValues = new();
+
+        private readonly List<double> yawX = new();
+        private readonly List<double> yawValues = new();
+
+        private ScottPlot.Plottables.Scatter rollPPlot = null!, rollIPlot = null!, rollDPlot = null!, rollTPlot = null!;
+        private ScottPlot.Plottables.Scatter rollActualPlot = null!, rollTargetPlot = null!;
+        private ScottPlot.Plottables.Scatter pitchPPlot = null!, pitchIPlot = null!, pitchDPlot = null!, pitchTPlot = null!;
+        private ScottPlot.Plottables.Scatter pitchActualPlot = null!, pitchTargetPlot = null!;
+        private ScottPlot.Plottables.Scatter altitudePlotObj = null!;
+        private ScottPlot.Plottables.Scatter yawPlotObj = null!;
+    private ScottPlot.Plottables.Scatter vzPlotObj = null!;
 
         private readonly ScottPlot.WPF.WpfPlot rollPlot;
         private readonly ScottPlot.WPF.WpfPlot pitchPlot;
         private readonly ScottPlot.WPF.WpfPlot rollPIDPlot;
         private readonly ScottPlot.WPF.WpfPlot pitchPIDPlot;
+    private readonly ScottPlot.WPF.WpfPlot altitudePlot;
+    private readonly ScottPlot.WPF.WpfPlot vzPlot;
+    private readonly ScottPlot.WPF.WpfPlot yawPlot;
 
         public bool IsPaused
         {
@@ -48,7 +71,7 @@ namespace DroneLogger.Classes
             set => isPaused = value;
         }
 
-        public PidPlotter(MainWindow context, ScottPlot.WPF.WpfPlot rollPIDPlot, ScottPlot.WPF.WpfPlot pitchPIDPlot, ScottPlot.WPF.WpfPlot rollPlot, ScottPlot.WPF.WpfPlot pitchPlot)
+    public PidPlotter(MainWindow context, ScottPlot.WPF.WpfPlot rollPIDPlot, ScottPlot.WPF.WpfPlot pitchPIDPlot, ScottPlot.WPF.WpfPlot rollPlot, ScottPlot.WPF.WpfPlot pitchPlot, ScottPlot.WPF.WpfPlot altitudePlot, ScottPlot.WPF.WpfPlot vzPlot, ScottPlot.WPF.WpfPlot yawPlot)
         {
             this.context = context;
 
@@ -56,6 +79,9 @@ namespace DroneLogger.Classes
             this.pitchPIDPlot = pitchPIDPlot;
             this.rollPlot = rollPlot;
             this.pitchPlot = pitchPlot;
+        this.altitudePlot = altitudePlot;
+        this.vzPlot = vzPlot;
+        this.yawPlot = yawPlot;
 
             InitializePlots();
         }
@@ -123,6 +149,33 @@ namespace DroneLogger.Classes
 
             pitchPIDPlot.Plot.Legend.IsVisible = true;
             pitchPIDPlot.Plot.Legend.Alignment = Alignment.UpperLeft;
+
+            // Altitude plot
+            altitudePlotObj = altitudePlot.Plot.Add.Scatter(altitudeX, altitudeValues);
+            altitudePlotObj.LegendText = "Altitude";
+            altitudePlotObj.Color = ScottPlot.Colors.CornflowerBlue;
+            altitudePlot.Plot.Legend.IsVisible = true;
+            altitudePlot.Plot.Legend.Alignment = Alignment.UpperLeft;
+            // enforce fixed Y range for altitude
+            altitudePlot.Plot.Axes.SetLimits(0, MAX_POINTS, AltitudeYMin, AltitudeYMax);
+
+            // Vz plot (vertical velocity)
+            vzPlotObj = vzPlot.Plot.Add.Scatter(vzX, vzValues);
+            vzPlotObj.LegendText = "Vz";
+            vzPlotObj.Color = ScottPlot.Colors.Teal;
+            vzPlot.Plot.Legend.IsVisible = true;
+            vzPlot.Plot.Legend.Alignment = Alignment.UpperLeft;
+            // enforce fixed Y range for Vz
+            vzPlot.Plot.Axes.SetLimits(0, MAX_POINTS, VzYMin, VzYMax);
+
+            // Yaw plot
+            yawPlotObj = yawPlot.Plot.Add.Scatter(yawX, yawValues);
+            yawPlotObj.LegendText = "Yaw";
+            yawPlotObj.Color = ScottPlot.Colors.MediumPurple;
+            yawPlot.Plot.Legend.IsVisible = true;
+            yawPlot.Plot.Legend.Alignment = Alignment.UpperLeft;
+            // enforce fixed Y range for yaw
+            yawPlot.Plot.Axes.SetLimits(0, MAX_POINTS, YawYMin, YawYMax);
         }
 
         public void UpdatePlots(LogData dataPoint)
@@ -133,7 +186,7 @@ namespace DroneLogger.Classes
             // Batch all plot updates before refreshing
             UpdateRollData(dataPoint);
             UpdatePitchData(dataPoint);
-            
+
             // Single refresh for all plots
             context.Dispatcher.BeginInvoke(() =>
             {
@@ -141,6 +194,9 @@ namespace DroneLogger.Classes
                 pitchPIDPlot.Refresh();
                 rollPlot.Refresh();
                 pitchPlot.Refresh();
+                altitudePlot?.Refresh();
+                vzPlot?.Refresh();
+                yawPlot?.Refresh();
             }, DispatcherPriority.Background);
 
             dataPointIndex++;
@@ -184,6 +240,67 @@ namespace DroneLogger.Classes
                 pitchActualPlot,
                 pitchTargetPlot,
                 pitchPlot);
+            AddAltitudeYawPoint(dataPointIndex, dataPoint.altitude, dataPoint.Vz, dataPoint.yaw, altitudeX, altitudeValues, vzX, vzValues, yawX, yawValues, altitudePlotObj, vzPlotObj, yawPlotObj, altitudePlot, vzPlot, yawPlot);
+        }
+
+        private void AddAltitudeYawPoint(
+            int index,
+            double altitude,
+            double vz,
+            double yaw,
+            List<double> altX, List<double> altList,
+            List<double> vzXList, List<double> vzList,
+            List<double> yawXList, List<double> yawList,
+            ScottPlot.Plottables.Scatter altPlotObj, ScottPlot.Plottables.Scatter vzPlotObj, ScottPlot.Plottables.Scatter yawPlotObj,
+            ScottPlot.WPF.WpfPlot altPlotControl, ScottPlot.WPF.WpfPlot vzPlotControl, ScottPlot.WPF.WpfPlot yawPlotControl)
+        {
+            // Altitude
+            altX.Add(index);
+            altList.Add(altitude);
+
+            if (altX.Count > MAX_POINTS)
+            {
+                altX.RemoveAt(0);
+                altList.RemoveAt(0);
+            }
+
+            double minAltX = altX.Count > 0 ? altX[0] : 0;
+            double maxAltX = altX.Count > 0 ? altX[^1] : MAX_POINTS;
+
+            // Use configurable fixed Y range for altitude
+            altPlotControl.Plot.Axes.SetLimits(minAltX, maxAltX + 1, AltitudeYMin, AltitudeYMax);
+
+            // Yaw
+            yawXList.Add(index);
+            yawList.Add(yaw);
+
+            if (yawXList.Count > MAX_POINTS)
+            {
+                yawXList.RemoveAt(0);
+                yawList.RemoveAt(0);
+            }
+
+            double minYawX = yawXList.Count > 0 ? yawXList[0] : 0;
+            double maxYawX = yawXList.Count > 0 ? yawXList[^1] : MAX_POINTS;
+
+            // Use configurable fixed Y range for yaw
+            yawPlotControl.Plot.Axes.SetLimits(minYawX, maxYawX + 1, YawYMin, YawYMax);
+
+            // Vz
+            vzXList.Add(index);
+            vzList.Add(vz);
+
+            if (vzXList.Count > MAX_POINTS)
+            {
+                vzXList.RemoveAt(0);
+                vzList.RemoveAt(0);
+            }
+
+            double minVzX = vzXList.Count > 0 ? vzXList[0] : 0;
+            double maxVzX = vzXList.Count > 0 ? vzXList[^1] : MAX_POINTS;
+
+            // Use configurable fixed Y range for Vz
+            vzPlotControl.Plot.Axes.SetLimits(minVzX, maxVzX + 1, VzYMin, VzYMax);
         }
 
         private void AddPIDPoint(
@@ -262,6 +379,12 @@ namespace DroneLogger.Classes
 
             pitchPIDPlot.Plot.Clear();
             pitchPIDPlot.Refresh();
+
+            altitudePlot?.Plot.Clear();
+            altitudePlot?.Refresh();
+
+            yawPlot?.Plot.Clear();
+            yawPlot?.Refresh();
 
             InitializePlots();
         }

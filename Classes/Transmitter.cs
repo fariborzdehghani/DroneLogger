@@ -1,230 +1,391 @@
-﻿using DroneLogger.Model;
-using System.IO;
-using System.IO.Ports;
-using System.Text;
+using DroneLogger.Model;
 
 namespace DroneLogger.Classes
 {
-    internal class Transmitter
+    internal sealed class Transmitter : IDisposable
     {
-        private MainWindow context;
-        private SerialPort TransmitPort;
-        private StringBuilder TransmitResultPackage = new StringBuilder();
+        private readonly MainWindow context;
+        private readonly SerialConnectionService radioConnection;
+        private readonly SemaphoreSlim controlStateGate = new(1, 1);
+        private Logger? logger;
+        private CancellationTokenSource? heartbeatCts;
+        private volatile bool heartbeatEnabled = true;
+        private volatile bool isArmed;
+        private bool serialMode;
+
+        public event EventHandler<ConnectionState>? ConnectionStateChanged;
+        public event EventHandler<bool>? ArmedStateChanged;
+
+        public bool IsArmed => isArmed;
+        public bool IsConnected => serialMode
+            ? logger?.IsLogPortOpen() == true
+            : radioConnection.IsConnected;
+        public bool IsSerialMode => serialMode;
 
         public Transmitter(MainWindow context)
         {
             this.context = context;
+            radioConnection = new SerialConnectionService();
+            radioConnection.LineReceived += (_, line) =>
+                Tools.Log(context, $"RemoteController: {line}");
+            radioConnection.ConnectionStateChanged += RadioConnection_StateChanged;
         }
 
-        // Method to fill the transmit ports list in the UI
+        public void AttachLogger(Logger loggerInstance)
+        {
+            if (logger != null)
+            {
+                logger.PortStateChanged -= Logger_PortStateChanged;
+            }
+
+            logger = loggerInstance ?? throw new ArgumentNullException(nameof(loggerInstance));
+            logger.PortStateChanged += Logger_PortStateChanged;
+        }
+
+        public void SetSerialMode(bool enabled)
+        {
+            if (isArmed)
+            {
+                throw new InvalidOperationException("DISARM before changing connection type.");
+            }
+
+            serialMode = enabled;
+            RaiseConnectionState();
+        }
+
+        public async Task ArmAsync(CancellationToken ct = default)
+        {
+            await controlStateGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (isArmed)
+                {
+                    return;
+                }
+
+                EnsureConnected();
+                await SendPackageCoreAsync(
+                    ProtocolPacketBuilder.BuildArmPacket(),
+                    PacketPriority.Normal,
+                    ct).ConfigureAwait(false);
+
+                isArmed = true;
+                ArmedStateChanged?.Invoke(this, true);
+                if (heartbeatEnabled)
+                {
+                    StartHeartbeat();
+                }
+            }
+            finally
+            {
+                controlStateGate.Release();
+            }
+        }
+
+        public async Task DisarmAsync(CancellationToken ct = default)
+        {
+            await controlStateGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                EnsureConnected();
+                await SendPackageCoreAsync(
+                    ProtocolPacketBuilder.BuildDisarmPacket(),
+                    PacketPriority.Disarm,
+                    ct).ConfigureAwait(false);
+
+                StopHeartbeat();
+                if (isArmed)
+                {
+                    isArmed = false;
+                    ArmedStateChanged?.Invoke(this, false);
+                }
+            }
+            finally
+            {
+                controlStateGate.Release();
+            }
+        }
+
+        public async Task TakeoffAsync(CancellationToken ct = default)
+        {
+            await controlStateGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                EnsureConnected();
+                if (!isArmed)
+                {
+                    throw new InvalidOperationException("ARM the drone before takeoff.");
+                }
+
+                await SendPackageCoreAsync(
+                    ProtocolPacketBuilder.BuildTakeoffPacket(),
+                    PacketPriority.Normal,
+                    ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                controlStateGate.Release();
+            }
+        }
+
+        public void SetHeartbeatEnabled(bool enabled)
+        {
+            if (isArmed && !enabled)
+            {
+                throw new InvalidOperationException(
+                    "Cannot disable desktop heartbeat while armed. DISARM first.");
+            }
+
+            heartbeatEnabled = enabled;
+            if (!enabled)
+            {
+                StopHeartbeat();
+                Tools.Log(context,
+                    "WARNING: Desktop heartbeat transmission is disabled. " +
+                    "The embedded failsafe may still be active.");
+            }
+            else if (isArmed)
+            {
+                StartHeartbeat();
+            }
+        }
+
+        public async Task SendPackageAsync(
+            byte[] data,
+            PacketPriority priority = PacketPriority.Normal,
+            CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            if (data.Length != ProtocolPacketBuilder.PacketSize)
+            {
+                throw new ArgumentException("Packet must be exactly 64 bytes.", nameof(data));
+            }
+            if (isArmed && data[0] == 1)
+            {
+                throw new InvalidOperationException("DISARM before changing configuration.");
+            }
+
+            EnsureConnected();
+            await SendPackageCoreAsync(data, priority, ct).ConfigureAwait(false);
+        }
+
+        private async Task SendPackageCoreAsync(
+            byte[] data,
+            PacketPriority priority,
+            CancellationToken ct)
+        {
+            if (serialMode)
+            {
+                if (logger == null)
+                {
+                    throw new InvalidOperationException("Logger serial transport is unavailable.");
+                }
+                await logger.SendCommandAsync(data, ct).ConfigureAwait(false);
+                return;
+            }
+
+            await radioConnection.EnqueuePacketAsync(data, priority, ct)
+                .ConfigureAwait(false);
+        }
+
+        private void StartHeartbeat()
+        {
+            StopHeartbeat();
+            var cts = new CancellationTokenSource();
+            heartbeatCts = cts;
+            _ = Task.Run(async () =>
+            {
+                using (cts)
+                {
+                    using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+                    try
+                    {
+                        while (await timer.WaitForNextTickAsync(cts.Token).ConfigureAwait(false))
+                        {
+                            if (!heartbeatEnabled || !isArmed)
+                            {
+                                break;
+                            }
+
+                            await SendPackageCoreAsync(
+                                ProtocolPacketBuilder.BuildHeartbeatPacket(),
+                                PacketPriority.Heartbeat,
+                                cts.Token).ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                    catch (Exception ex)
+                    {
+                        Tools.Log(context, $"Heartbeat stopped: {ex.Message}");
+                        ResetArmedStateAfterConnectionLoss();
+                    }
+                }
+            }, CancellationToken.None);
+        }
+
+        private void StopHeartbeat()
+        {
+            CancellationTokenSource? cts = heartbeatCts;
+            heartbeatCts = null;
+            if (cts != null)
+            {
+                try
+                {
+                    cts.Cancel();
+                }
+                catch
+                {
+                }
+            }
+        }
+
         public void FillTransmitPortsList()
         {
-            // Use Dispatcher to update UI elements from a non-UI thread if this method is called from one
             context.Dispatcher.BeginInvoke(() =>
             {
                 context.cmb_TransmitPort.Items.Clear();
-                string[] ports = SerialPort.GetPortNames();
-
-                foreach (string port in ports)
+                foreach (string port in System.IO.Ports.SerialPort.GetPortNames())
                 {
-                    //if (port != context.cmb_LogPort.SelectedItem?.ToString())
-                    //{
-                        context.cmb_TransmitPort.Items.Add(port);
-                    //}
+                    context.cmb_TransmitPort.Items.Add(port);
                 }
-
-                if (context.cmb_TransmitPort.Items.Count > 0) context.cmb_TransmitPort.SelectedIndex = 0;
+                if (context.cmb_TransmitPort.Items.Count > 0)
+                {
+                    context.cmb_TransmitPort.SelectedIndex = 0;
+                }
             });
         }
 
-        // Method to connect the transmit serial port
-        public void TransmitPortConnect()
+        public async Task ConnectTransmitPortAsync(CancellationToken ct = default)
         {
-            // Use Dispatcher to update UI elements from a non-UI thread if this method is called from one
-            context.Dispatcher.BeginInvoke(() =>
+            if (serialMode)
             {
-                if (context.cmb_TransmitPort.SelectedItem == null)
-                {
-                    Tools.Log(context, "Error: No transmit port selected");
-                    return;
-                }
+                throw new InvalidOperationException(
+                    "The Transmitter port is used only in Radio mode.");
+            }
+            if (context.cmb_TransmitPort.SelectedItem == null)
+            {
+                throw new InvalidOperationException("No transmit port is selected.");
+            }
+
+            string portName = context.cmb_TransmitPort.SelectedItem.ToString()!;
+            await radioConnection.ConnectAsync(portName, ct).ConfigureAwait(false);
+            Tools.Log(context, $"Transmit port {portName} connected.");
+        }
+
+        public async Task DisconnectTransmitPortAsync()
+        {
+            if (!radioConnection.IsConnected)
+            {
+                return;
+            }
+
+            if (!serialMode && isArmed)
+            {
                 try
                 {
-                    TransmitPort = new SerialPort(context.cmb_TransmitPort.SelectedItem.ToString(), 115200, Parity.None, 8, StopBits.One);
-                    TransmitPort.DataReceived += TransmitPort_DataReceived;
-                    TransmitPort.ErrorReceived += TransmitPort_ErrorReceived;
-                    TransmitPort.Open();
-                    context.btn_TransmitPortConnect.Content = "Disconnect";
-                    SetTransmitControlsEnabled(true);
-                    Tools.Log(context, $"Transmit port {TransmitPort.PortName} connected.");
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+                    await DisarmAsync(timeout.Token).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    Tools.Log(context, $"Transmit Port Connection Error: {ex.Message}");
-                    TransmitPortDisconnect(); // Ensure state is clean on error
-                }
-            });
-        }
-
-        // Method to disconnect the transmit serial port
-        public void TransmitPortDisconnect()
-        {
-            // Use Dispatcher to update UI elements from a non-UI thread if this method is called from one
-            context.Dispatcher.BeginInvoke(() =>
-            {
-                if (TransmitPort != null && TransmitPort.IsOpen)
-                {
-                    TransmitPort.Close();
-                    TransmitPort.Dispose();
-                    TransmitPort = null;
-                    Tools.Log(context, "Transmit port disconnected.");
-                }
-                context.btn_TransmitPortConnect.Content = "Connect";
-                SetTransmitControlsEnabled(false);
-            });
-        }
-
-        // Check if the transmit port is open
-        public bool IsTransmitPortOpen()
-        {
-            return TransmitPort != null && TransmitPort.IsOpen;
-        }
-
-        // Helper method to enable/disable transmit related UI controls
-        public void SetTransmitControlsEnabled(bool enabled)
-        {
-            // Use Dispatcher to update UI elements from a non-UI thread if this method is called from one
-            context.Dispatcher.BeginInvoke(() =>
-            {
-                context.btn_SetConfig.IsEnabled = enabled;
-                context.btn_Power.IsEnabled = enabled;
-            });
-        }
-
-        // Event handler for receiving data on the transmit port
-        private void TransmitPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
-        {
-            if (TransmitPort == null || !TransmitPort.IsOpen)
-                return;
-
-            try
-            {
-                string incoming = TransmitPort.ReadExisting();
-                TransmitResultPackage.Append(incoming);
-
-                // Process complete lines
-                while (TransmitResultPackage.ToString().Contains("\n"))
-                {
-                    string fullLine = TransmitResultPackage.ToString();
-                    int index = fullLine.IndexOf('\n');
-                    string line = fullLine.Substring(0, index).Trim();
-                    TransmitResultPackage.Remove(0, index + 1);
-
-                    // Call the AnalyseTransmitData method in MainWindow
-                    AnalysData(line);
-
-                    // Clear the buffer after processing a line (or keep appending if lines can be very long)
-                    // Clearing here assumes each '\n' signifies a complete, independent package.
-                    TransmitResultPackage.Clear();
+                    Tools.Log(context, $"DISARM before disconnect failed: {ex.Message}");
                 }
             }
-            catch (IOException ioEx)
+
+            await radioConnection.DisconnectAsync().ConfigureAwait(false);
+            Tools.Log(context, "Transmit port disconnected.");
+        }
+
+        public bool IsTransmitPortOpen() => radioConnection.IsConnected;
+
+        public byte[] CreateConfigPacket(Config config) =>
+            ProtocolPacketBuilder.BuildConfigurationPacket(config);
+
+        public async Task ShutdownAsync()
+        {
+            if (isArmed && IsConnected)
             {
-                context.Dispatcher.BeginInvoke(() =>
+                try
                 {
-                    Tools.Log(context, "Transmit serial port disconnected (IO exception).");
-                    TransmitPortDisconnect();
-                });
-            }
-            catch (InvalidOperationException invEx)
-            {
-                context.Dispatcher.BeginInvoke(() =>
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+                    await DisarmAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex)
                 {
-                    Tools.Log(context, "Transmit serial port disconnected (invalid operation).");
-                    TransmitPortDisconnect();
-                });
+                    Tools.Log(context, $"Shutdown DISARM failed: {ex.Message}");
+                }
             }
-            catch (Exception ex)
+
+            StopHeartbeat();
+            await radioConnection.DisconnectAsync().ConfigureAwait(false);
+            ResetArmedStateAfterConnectionLoss();
+        }
+
+        private void EnsureConnected()
+        {
+            if (!IsConnected)
             {
-                Tools.Log(context, $"Error receiving transmit data: {ex.Message}");
+                string portDescription = serialMode ? "Logger/device" : "Transmitter";
+                throw new InvalidOperationException(
+                    $"{portDescription} serial port is not connected.");
             }
         }
 
-        private void AnalysData(string data)
+        private void RadioConnection_StateChanged(object? sender, ConnectionState state)
         {
-            Tools.Log(context, data);
-        }
-
-        // Event handler for transmit serial port errors
-        private void TransmitPort_ErrorReceived(object sender, SerialErrorReceivedEventArgs e)
-        {
-            Tools.Log(context, $"Transmit serial port error: {e.EventType}");
-            TransmitPortDisconnect();
-        }
-
-        // Method to send a package over the transmit serial port
-        public void SendPackage(byte[] data)
-        {
-            if (TransmitPort == null || !TransmitPort.IsOpen)
+            if (state == ConnectionState.Disconnected && !serialMode)
             {
-                Tools.Log(context, "Error: Not connected to transmit serial port");
-                // No need to call TransmitPortDisconnect here, IsTransmitPortOpen check handles it
-                return;
+                ResetArmedStateAfterConnectionLoss();
             }
-
-            try
+            if (!serialMode)
             {
-                // Write the data bytes
-                TransmitPort.Write(data, 0, data.Length);
-                // Write the terminator byte
-                //TransmitPort.Write([255], 0, 1);
-            }
-            catch (Exception ex)
-            {
-                Tools.Log(context, $"Error sending data: {ex.Message}");
-                TransmitPortDisconnect(); // Disconnect on send error
+                ConnectionStateChanged?.Invoke(this, state);
             }
         }
 
-        // Method to create the configuration packet byte array
-        public byte[] CreateConfigPacket(Config config)
+        private void Logger_PortStateChanged(object? sender, bool connected)
         {
-            byte[] data = new byte[32];
-            data[0] = 1; // Packet type for Config
+            if (!connected && serialMode)
+            {
+                ResetArmedStateAfterConnectionLoss();
+            }
+            if (serialMode)
+            {
+                ConnectionStateChanged?.Invoke(
+                    this,
+                    connected ? ConnectionState.Connected : ConnectionState.Disconnected);
+            }
+        }
 
-            // Basic configuration values
-            data[1] = (byte)config.Throttle;
-            data[2] = (byte)config.MinSpeed;
-            data[3] = (byte)config.MaxSpeed;
-            data[4] = (byte)config.MaxAngle;
+        private void RaiseConnectionState()
+        {
+            ConnectionStateChanged?.Invoke(
+                this,
+                IsConnected ? ConnectionState.Connected : ConnectionState.Disconnected);
+        }
 
-            // TargetPitch, TargetRoll, TargetYaw as signed 16-bit
-            Buffer.BlockCopy(BitConverter.GetBytes((short)config.TargetPitch), 0, data, 5, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((short)config.TargetRoll), 0, data, 7, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((short)config.TargetYaw), 0, data, 9, 2);
+        private void ResetArmedStateAfterConnectionLoss()
+        {
+            StopHeartbeat();
+            if (isArmed)
+            {
+                isArmed = false;
+                ArmedStateChanged?.Invoke(this, false);
+            }
+        }
 
-            // PID values - scaling and using ushort for Ki/Kd
-            data[11] = (byte)(config.PitchKp * 100);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.PitchKi * 10000)), 0, data, 12, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.PitchKd * 1000)), 0, data, 14, 2);
-
-            data[16] = (byte)(config.RollKp * 100);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.RollKi * 10000)), 0, data, 17, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.RollKd * 1000)), 0, data, 19, 2);
-
-            data[21] = (byte)(config.YawKp * 100);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.YawKi * 1000)), 0, data, 22, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.YawKd * 10000)), 0, data, 24, 2);
-
-            data[26] = (byte)config.PIDStartThreshold;
-
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.PIDMaxIPart * 10)), 0, data, 27, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes((ushort)(config.PIDMaxOutput * 10)), 0, data, 29, 2);
-
-            // Add new PID Start Throttle value at the next available byte position (31)
-            data[31] = (byte)config.PIDStartThrottle;
-
-            return data;
+        public void Dispose()
+        {
+            StopHeartbeat();
+            if (logger != null)
+            {
+                logger.PortStateChanged -= Logger_PortStateChanged;
+            }
+            radioConnection.ConnectionStateChanged -= RadioConnection_StateChanged;
+            radioConnection.Dispose();
+            controlStateGate.Dispose();
         }
     }
 }

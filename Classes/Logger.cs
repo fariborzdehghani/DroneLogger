@@ -3,6 +3,8 @@ using System.IO;
 using System.IO.Ports;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Controls;  // Add this line to resolve Canvas namespace
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -12,10 +14,12 @@ namespace DroneLogger.Classes
     public class Logger
     {
         public MainWindow context;
-        private SerialPort LogPort;
-        private StringBuilder LogPackage = new StringBuilder();
-        private bool isSerialMode = false;
+        private SerialPort? LogPort;
+        private readonly StringBuilder LogPackage = new StringBuilder();
+        private readonly SemaphoreSlim commandWriteGate = new SemaphoreSlim(1, 1);
         private PidPlotter pidPlotter;
+
+        public event EventHandler<bool>? PortStateChanged;
 
         private const double MIN_CIRCLE_SIZE = 20;
         private const double MAX_CIRCLE_SIZE = 70;
@@ -23,7 +27,7 @@ namespace DroneLogger.Classes
         public Logger(MainWindow context)
         {
             this.context = context;
-            this.pidPlotter = new PidPlotter(context, context.rollPidPlot, context.pitchPidPlot, context.rollValuePlot, context.pitchValuePlot);
+            this.pidPlotter = new PidPlotter(context, context.rollPidPlot, context.pitchPidPlot, context.rollValuePlot, context.pitchValuePlot, context.altitudePlot, context.vzPlot, context.yawPlot);
         }
 
         // Method to fill the log ports list in the UI
@@ -37,10 +41,10 @@ namespace DroneLogger.Classes
 
                 foreach (string port in ports)
                 {
-                    if (port != context.cmb_TransmitPort.SelectedItem?.ToString())
-                    {
+                    //if (port != context.cmb_TransmitPort.SelectedItem?.ToString())
+                    //{
                         context.cmb_LogPort.Items.Add(port);
-                    }
+                    //}
                 }
 
                 if (context.cmb_LogPort.Items.Count > 0) context.cmb_LogPort.SelectedIndex = 0;
@@ -50,54 +54,76 @@ namespace DroneLogger.Classes
         // Method to connect the log serial port
         public void LogPortConnect()
         {
-            context.Dispatcher.BeginInvoke(() =>
+            if (!context.Dispatcher.CheckAccess())
             {
-                if (context.cmb_LogPort.SelectedItem == null)
-                {
-                    Tools.Log(context, "Error: No log port selected");
-                    return;
-                }
+                context.Dispatcher.BeginInvoke(LogPortConnect);
+                return;
+            }
 
-                try
-                {
-                    LogPort = new SerialPort(context.cmb_LogPort.SelectedItem.ToString(), 115200, Parity.None, 8, StopBits.One);
-                    LogPort.DataReceived += LogPort_DataReceived;
-                    LogPort.ErrorReceived += LogPort_ErrorReceived;
-                    LogPort.Open();
-                    context.btn_LogPortConnect.Content = "Disconnect";
+            if (context.cmb_LogPort.SelectedItem == null)
+            {
+                Tools.Log(context, "Error: No log port selected");
+                return;
+            }
 
-                    if (isSerialMode)
-                    {
-                        context.btn_SetConfig.IsEnabled = true;
-                        context.btn_Power.IsEnabled = true;
-                    }
-
-                    Tools.Log(context, $"Log port {LogPort.PortName} connected.");
-                }
-                catch (Exception ex)
+            try
+            {
+                LogPort = new SerialPort(context.cmb_LogPort.SelectedItem.ToString(),
+                    115200, Parity.None, 8, StopBits.One)
                 {
-                    Tools.Log(context, $"Log Port Connection Error: {ex.Message}");
-                    LogPortDisconnect();
-                }
-            });
+                    Handshake = Handshake.None,
+                    WriteTimeout = 500
+                };
+                LogPort.DataReceived += LogPort_DataReceived;
+                LogPort.ErrorReceived += LogPort_ErrorReceived;
+                LogPort.Open();
+                LogPackage.Clear();
+                context.btn_LogPortConnect.Content = "Disconnect";
+                PortStateChanged?.Invoke(this, true);
+                Tools.Log(context, $"Log port {LogPort.PortName} connected.");
+            }
+            catch (Exception ex)
+            {
+                Tools.Log(context, $"Log Port Connection Error: {ex.Message}");
+                LogPortDisconnect();
+            }
         }
 
         // Method to disconnect the log serial port
         public void LogPortDisconnect()
         {
-            // Use Dispatcher to update UI elements from a non-UI thread if this method is called from one
-            context.Dispatcher.BeginInvoke(() =>
+            if (!context.Dispatcher.CheckAccess())
             {
-                if (LogPort != null && LogPort.IsOpen)
+                context.Dispatcher.BeginInvoke(LogPortDisconnect);
+                return;
+            }
+
+            bool hadPort = LogPort != null;
+            if (LogPort != null)
+            {
+                LogPort.DataReceived -= LogPort_DataReceived;
+                LogPort.ErrorReceived -= LogPort_ErrorReceived;
+                try
                 {
-                    LogPort.Close();
-                    LogPort.Dispose();
-                    LogPort = null;
-                    Tools.Log(context, "Log port disconnected.");
+                    if (LogPort.IsOpen)
+                    {
+                        LogPort.Close();
+                    }
                 }
-                context.btn_LogPortConnect.Content = "Connect"; // Assuming a btn_LogPortConnect exists in UI
-                                                                // Disable log-specific controls here if any
-            });
+                catch
+                {
+                }
+                LogPort.Dispose();
+                LogPort = null;
+            }
+
+            LogPackage.Clear();
+            context.btn_LogPortConnect.Content = "Connect";
+            if (hadPort)
+            {
+                Tools.Log(context, "Log port disconnected.");
+                PortStateChanged?.Invoke(this, false);
+            }
         }
 
         // Check if the log port is open
@@ -128,18 +154,16 @@ namespace DroneLogger.Classes
                     // Call the AnalyseLogData method in MainWindow
                     AnalyseData(line);
 
-                    // Clear the buffer after processing a line
-                    LogPackage.Clear();
                 }
             }
-            catch (IOException ioEx)
+            catch (IOException)
             {
 
                 Tools.Log(context, "Log serial port disconnected (IO exception).");
                 LogPortDisconnect();
 
             }
-            catch (InvalidOperationException invEx)
+            catch (InvalidOperationException)
             {
 
                 Tools.Log(context, "Log serial port disconnected (invalid operation).");
@@ -170,18 +194,51 @@ namespace DroneLogger.Classes
                     {
                         jsonData = CleanJsonString(line.Substring(5).Trim());
                         var logData = JsonSerializer.Deserialize<LogData>(jsonData);
+                        if (logData == null)
+                        {
+                            Tools.Log(context, "Received an empty flight-data record.");
+                            return;
+                        }
 
                         // Existing updates
                         context.lbl_Roll.Content = logData.roll.ToString("F2");
                         context.lbl_Pitch.Content = logData.pitch.ToString("F2");
-                        context.lbl_Motor1_Value.Content = context.txt_Throttle.Text;
-                        context.lbl_Motor2_Value.Content = context.txt_Throttle.Text;
-                        context.lbl_Motor3_Value.Content = context.txt_Throttle.Text;
-                        context.lbl_Motor4_Value.Content = context.txt_Throttle.Text;
-                        context.lbl_Motor1_PID.Content = (logData.m1 - Convert.ToDouble(context.txt_Throttle.Text)).ToString("F2");
-                        context.lbl_Motor2_PID.Content = (logData.m2 - Convert.ToDouble(context.txt_Throttle.Text)).ToString("F2");
-                        context.lbl_Motor3_PID.Content = (logData.m3 - Convert.ToDouble(context.txt_Throttle.Text)).ToString("F2");
-                        context.lbl_Motor4_PID.Content = (logData.m4 - Convert.ToDouble(context.txt_Throttle.Text)).ToString("F2");
+                        context.lbl_Yaw.Content = logData.yaw.ToString("F2");
+                        // Gz display removed from UI
+                        // Vz (vertical velocity) - only show and plot when valid flag set by device
+                        if (logData.Vz_valid == 1)
+                        {
+                            if (context.lbl_Vz != null) context.lbl_Vz.Content = logData.Vz.ToString("F2");
+                            if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = logData.Vz.ToString("F2") + " m/s";
+                        }
+                        else
+                        {
+                            if (context.lbl_Vz != null) context.lbl_Vz.Content = "N/A";
+                            if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = "N/A";
+                            // mark as NaN so plots will show a gap
+                            logData.Vz = double.NaN;
+                        }
+                        context.lbl_Altitude.Content = logData.altitude.ToString("F2");
+                        // Update canvas tab labels
+                        context.lbl_Canvas_Roll.Text = logData.roll.ToString("F2") + "°";
+                        context.lbl_Canvas_Pitch.Text = logData.pitch.ToString("F2") + "°";
+                        context.lbl_Canvas_Yaw.Text = logData.yaw.ToString("F2") + "°";
+                        context.lbl_Canvas_Altitude.Text = logData.altitude.ToString("F2") + " cm";
+                        if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = logData.Vz.ToString("F2") + " m/s";
+                        // Update new compass UI
+                        context.lbl_YawNumeric.Text = logData.yaw.ToString("F2") + "°";
+                        // Rotate the needle around the compass center (90,90)
+                        // Use negative angle so increasing yaw rotates the needle counter-clockwise
+                        RotateTransform yawRotate = new RotateTransform(logData.yaw, 90, 90);
+                        context.YawNeedle.RenderTransform = yawRotate;
+                        context.lbl_Motor1_Value.Content = logData.base_throttle.ToString("F2");
+                        context.lbl_Motor2_Value.Content = logData.base_throttle.ToString("F2");
+                        context.lbl_Motor3_Value.Content = logData.base_throttle.ToString("F2");
+                        context.lbl_Motor4_Value.Content = logData.base_throttle.ToString("F2");
+                        context.lbl_Motor1_PID.Content = (logData.m1 - logData.base_throttle).ToString("F2");
+                        context.lbl_Motor2_PID.Content = (logData.m2 - logData.base_throttle).ToString("F2");
+                        context.lbl_Motor3_PID.Content = (logData.m3 - logData.base_throttle).ToString("F2");
+                        context.lbl_Motor4_PID.Content = (logData.m4 - logData.base_throttle).ToString("F2");
                         context.lbl_Motor1_ModifiedValue.Content = logData.m1.ToString("F2");
                         context.lbl_Motor2_ModifiedValue.Content = logData.m2.ToString("F2");
                         context.lbl_Motor3_ModifiedValue.Content = logData.m3.ToString("F2");
@@ -192,12 +249,18 @@ namespace DroneLogger.Classes
                         context.lbl_Pitch_P.Content = logData.pitch_p.ToString("F2");
                         context.lbl_Pitch_I.Content = logData.pitch_i.ToString("F2");
                         context.lbl_Pitch_D.Content = logData.pitch_d.ToString("F2");
+                        // Gz PID displays removed from UI
+                        context.lbl_Altitude_P.Content = logData.altitude_p.ToString("F2");
+                        context.lbl_Altitude_I.Content = logData.altitude_i.ToString("F2");
+                        context.lbl_Altitude_D.Content = logData.altitude_d.ToString("F2");
 
                         UpdateHorizon(logData.roll, logData.pitch);
                         if (logData != null)
                         {
                             UpdateMotorIndicators(logData.m1, logData.m2, logData.m3, logData.m4);
                             pidPlotter.UpdatePlots(logData);
+                            // update 3D view (if available)
+                            try { context.Drone3D?.Update(logData); } catch { }
                         }
                     }
 
@@ -296,30 +359,34 @@ namespace DroneLogger.Classes
 
         }
 
-        // Add method to set serial mode
-        public void SetSerialMode(bool enabled)
+        public async Task SendCommandAsync(byte[] data, CancellationToken ct = default)
         {
-            isSerialMode = enabled;
-        }
-
-        // Add method to send commands in serial mode
-        public void SendCommand(byte[] data)
-        {
-            if (!isSerialMode || LogPort == null || !LogPort.IsOpen)
+            ArgumentNullException.ThrowIfNull(data);
+            if (data.Length != ProtocolPacketBuilder.PacketSize)
             {
-                Tools.Log(context, "Error: Cannot send command - Logger not in serial mode or not connected");
-                return;
+                throw new ArgumentException("Packet must be exactly 64 bytes.", nameof(data));
             }
 
+            await commandWriteGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                if (LogPort?.IsOpen != true)
+                {
+                    throw new InvalidOperationException("Logger/device serial port is not connected.");
+                }
+
+                ct.ThrowIfCancellationRequested();
                 LogPort.Write(data, 0, data.Length);
-                //LogPort.Write(new byte[] { 255 }, 0, 1); // Terminator byte
             }
             catch (Exception ex)
             {
                 Tools.Log(context, $"Error sending command: {ex.Message}");
                 LogPortDisconnect();
+                throw;
+            }
+            finally
+            {
+                commandWriteGate.Release();
             }
         }
         // Add this method to Logger.cs

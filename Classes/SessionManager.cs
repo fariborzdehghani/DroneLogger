@@ -8,12 +8,12 @@ namespace DroneLogger.Classes
     public class SessionManager
     {
         public readonly Logger logger;
-        private SessionData currentSession;
+        private SessionData? currentSession;
         private readonly PidPlotter pidPlotter;
         private const string SESSION_FILE_NAME = "last_session.csv";
 
         public bool IsSessionActive { get; private set; }
-        public SessionData CurrentSession => currentSession;
+        public SessionData? CurrentSession => currentSession;
         public List<SessionData> SessionHistory { get; } = new List<SessionData>();
 
         public SessionManager(Logger logger)
@@ -23,7 +23,7 @@ namespace DroneLogger.Classes
             this.pidPlotter = logger.GetPidPlotter();
         }
 
-        public void StartNewSession(Config currentConfig = null)
+        public void StartNewSession(Config? currentConfig = null)
         {
             // End current session if active
             if (IsSessionActive)
