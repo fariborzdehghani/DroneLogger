@@ -151,8 +151,7 @@ namespace DroneLogger.Classes
                     string line = fullLine.Substring(0, index).Trim();
                     LogPackage.Remove(0, index + 1);
 
-                    // Call the AnalyseLogData method in MainWindow
-                    AnalyseData(line);
+                    ProcessDiagnosticLine(line);
 
                 }
             }
@@ -176,23 +175,61 @@ namespace DroneLogger.Classes
             }
         }
 
-        private string CleanJsonString(string input)
+        internal static bool TryExtractMessagePayload(
+            string line,
+            string messageType,
+            out string jsonData)
         {
-            int braceIndex = input.IndexOf('{');
-            return braceIndex >= 0 ? input.Substring(braceIndex) : input;
+            jsonData = string.Empty;
+            if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(messageType))
+            {
+                return false;
+            }
+
+            string marker = messageType + "=";
+            int markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+            {
+                return false;
+            }
+
+            // A relay may prepend a source label, for example
+            // "RemoteController: Data={...}". Do not accept a marker embedded
+            // in an unrelated word.
+            if (markerIndex > 0 && !char.IsWhiteSpace(line[markerIndex - 1]))
+            {
+                return false;
+            }
+
+            int braceIndex = line.IndexOf('{', markerIndex + marker.Length);
+            if (braceIndex < 0)
+            {
+                return false;
+            }
+
+            jsonData = line[braceIndex..].Trim();
+            return true;
         }
 
-        private void AnalyseData(string line)
+        /// <summary>
+        /// Process one complete diagnostic line received from either the direct
+        /// logger port or the RemoteController radio connection.
+        /// </summary>
+        internal void ProcessDiagnosticLine(string line)
         {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                return;
+            }
+
             context.Dispatcher.BeginInvoke(() =>
             {
                 try
                 {
-                    string jsonData = "";
+                    string jsonData;
 
-                    if (line.StartsWith("Data="))
+                    if (TryExtractMessagePayload(line, "Data", out jsonData))
                     {
-                        jsonData = CleanJsonString(line.Substring(5).Trim());
                         var logData = JsonSerializer.Deserialize<LogData>(jsonData);
                         if (logData == null)
                         {
@@ -259,24 +296,27 @@ namespace DroneLogger.Classes
                         {
                             UpdateMotorIndicators(logData.m1, logData.m2, logData.m3, logData.m4);
                             pidPlotter.UpdatePlots(logData);
-                            // update 3D view (if available)
-                            try { context.Drone3D?.Update(logData); } catch { }
+                            // Keep both the full simulator and compact main-tab view in sync.
+                            try
+                            {
+                                context.Drone3D?.Update(logData);
+                                context.CompactDrone3D?.Update(logData);
+                            }
+                            catch { }
                         }
                     }
 
-                    if (line.StartsWith("Error="))
+                    if (TryExtractMessagePayload(line, "Error", out jsonData))
                     {
-                        jsonData = CleanJsonString(line.Substring(6)); // Remove "Error="
                         var errorData = JsonSerializer.Deserialize<Error>(jsonData);
                         if (errorData != null)
                         {
                             Tools.Log(context, $"Error received: Code={errorData.Code}, Message={errorData.Content}");
                         }
                     }
-                    else if (line.StartsWith("Information="))
+                    else if (TryExtractMessagePayload(line, "Information", out jsonData))
                     {
                         //Tools.Log(context, line);
-                        jsonData = CleanJsonString(line.Substring(12)); // Remove "Information="
                         var infoData = JsonSerializer.Deserialize<Information>(jsonData);
                         if (infoData != null)
                         {
@@ -289,6 +329,10 @@ namespace DroneLogger.Classes
                 {
                     Tools.Log(context, $"Log data: {line}");
                     Tools.Log(context, $"JSON deserialization error: {jsonEx.Message}");
+                }
+                catch (Exception ex)
+                {
+                    Tools.Log(context, $"Telemetry update error: {ex.Message}");
                 }
             });
         }

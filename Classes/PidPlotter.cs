@@ -1,4 +1,5 @@
 using ScottPlot;
+using ScottPlot.Interactivity.UserActionResponses;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Threading;
@@ -83,7 +84,27 @@ namespace DroneLogger.Classes
         this.vzPlot = vzPlot;
         this.yawPlot = yawPlot;
 
+            DisableMouseWheelZoom();
             InitializePlots();
+        }
+
+        private void DisableMouseWheelZoom()
+        {
+            ScottPlot.WPF.WpfPlot[] plotControls =
+            {
+                rollPIDPlot,
+                pitchPIDPlot,
+                rollPlot,
+                pitchPlot,
+                altitudePlot,
+                vzPlot,
+                yawPlot
+            };
+
+            foreach (ScottPlot.WPF.WpfPlot plotControl in plotControls)
+            {
+                plotControl.UserInputProcessor.RemoveAll<MouseWheelZoom>();
+            }
         }
 
         private void InitializePlots()

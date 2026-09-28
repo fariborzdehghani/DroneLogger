@@ -26,8 +26,7 @@ namespace DroneLogger.Classes
         {
             this.context = context;
             radioConnection = new SerialConnectionService();
-            radioConnection.LineReceived += (_, line) =>
-                Tools.Log(context, $"RemoteController: {line}");
+            radioConnection.LineReceived += RadioConnection_LineReceived;
             radioConnection.ConnectionStateChanged += RadioConnection_StateChanged;
         }
 
@@ -345,6 +344,21 @@ namespace DroneLogger.Classes
             }
         }
 
+        private void RadioConnection_LineReceived(object? sender, string line)
+        {
+            bool isDataLog =
+                Logger.TryExtractMessagePayload(line, "Data", out _);
+            Tools.Log(
+                context,
+                $"RemoteController: {line}",
+                isDataLog);
+
+            // Radio diagnostics carry the same Data=/Error=/Information=
+            // envelopes as the direct logger port. Forward them to the shared
+            // telemetry processor so labels, plots, and 3D views update too.
+            logger?.ProcessDiagnosticLine(line);
+        }
+
         private void Logger_PortStateChanged(object? sender, bool connected)
         {
             if (!connected && serialMode)
@@ -383,6 +397,7 @@ namespace DroneLogger.Classes
             {
                 logger.PortStateChanged -= Logger_PortStateChanged;
             }
+            radioConnection.LineReceived -= RadioConnection_LineReceived;
             radioConnection.ConnectionStateChanged -= RadioConnection_StateChanged;
             radioConnection.Dispose();
             controlStateGate.Dispose();

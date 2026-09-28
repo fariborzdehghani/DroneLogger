@@ -34,13 +34,42 @@ namespace DroneLogger.Classes
             try
             {
                 string jsonString = File.ReadAllText(CONFIG_FILE);
-                return JsonSerializer.Deserialize<Config>(jsonString);
+                return DeserializeConfiguration(jsonString);
             }
             catch
             {
                 // If there's any error reading/parsing the file, return null to keep initial values
                 return null;
             }
+        }
+
+        internal static Config? DeserializeConfiguration(string jsonString)
+        {
+            Config? config = JsonSerializer.Deserialize<Config>(jsonString);
+            if (config == null)
+            {
+                return null;
+            }
+
+            // Migrate configuration files written before the throttle rename.
+            using JsonDocument document = JsonDocument.Parse(jsonString);
+            JsonElement root = document.RootElement;
+
+            if (!root.TryGetProperty(nameof(Config.MinThrottle), out _) &&
+                root.TryGetProperty("MinSpeed", out JsonElement oldMin) &&
+                oldMin.TryGetInt32(out int minThrottle))
+            {
+                config.MinThrottle = minThrottle;
+            }
+
+            if (!root.TryGetProperty(nameof(Config.MaxThrottle), out _) &&
+                root.TryGetProperty("MaxSpeed", out JsonElement oldMax) &&
+                oldMax.TryGetInt32(out int maxThrottle))
+            {
+                config.MaxThrottle = maxThrottle;
+            }
+
+            return config;
         }
     }
 }

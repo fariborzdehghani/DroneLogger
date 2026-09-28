@@ -19,6 +19,7 @@ namespace DroneLogger
         private bool shutdownComplete;
         // 3D view helper
         public Drone3DView? Drone3D { get; private set; }
+        public Drone3DView? CompactDrone3D { get; private set; }
 
         public MainWindow()
         {
@@ -88,8 +89,6 @@ namespace DroneLogger
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            txt_Log.Document.LineHeight = 2;
-
             transmitter.FillTransmitPortsList();
             logger.FillLogPortsList();
 
@@ -104,8 +103,15 @@ namespace DroneLogger
 
             // initialize 3D view (you can pass initial altitude, yaw, pitch, roll)
             Drone3D = new Drone3DView();
-            // Example: altitude=0, yaw=0, pitch=0, roll=0. Change values as needed.
-            Drone3D.Initialize(CanvasContainer, initialAltitude: 7.0, initialYaw: 0.0, initialPitch: 0.0, initialRoll: 0.0);
+            Drone3D.Initialize(CanvasContainer, showFrame: false);
+            CompactDrone3D = new Drone3DView();
+            CompactDrone3D.Initialize(
+                MainDroneContainer,
+                showFrame: false,
+                initialCameraDistance: 1.25,
+                cameraTargetHeight: 0.3,
+                enableMouseWheelZoom: true,
+                enableMouseDragPan: true);
         }
 
         private async void Window_Closing(object? sender, CancelEventArgs e)
@@ -239,8 +245,7 @@ namespace DroneLogger
 
         private void btn_ClearLog_Click(object sender, RoutedEventArgs e)
         {
-            txt_Log.Document.Blocks.Clear();
-            txt_Log.ScrollToEnd();
+            Tools.ClearLog(this);
         }
 
         private async void btn_Arm_Click(object sender, RoutedEventArgs e)
@@ -274,7 +279,7 @@ namespace DroneLogger
             try
             {
                 await transmitter.TakeoffAsync();
-                Tools.Log(this, "TAKEOFF requested: firmware is searching for the 50 cm throttle");
+                Tools.Log(this, "TAKEOFF requested: bounded liftoff ramp, then controlled climb to target height");
             }
             catch (Exception ex)
             {
@@ -335,7 +340,7 @@ namespace DroneLogger
             try
             {
                 //clear txt_log
-                //txt_Log.Document.Blocks.Clear();
+                // Tools.ClearLog(this);
 
                 Config config = GetConfigFromUI();
 
@@ -358,9 +363,9 @@ namespace DroneLogger
         private async void btn_ThrottleIncrease_Click(object sender, RoutedEventArgs e)
         {
             if (int.TryParse(txt_ArmThrottle.Text, out int throttle) &&
-                int.TryParse(txt_MaxSpeed.Text, out int maxSpeed))
+                int.TryParse(txt_MaxThrottle.Text, out int maxThrottle))
             {
-                throttle = Math.Min(throttle + 1, maxSpeed);
+                throttle = Math.Min(throttle + 1, maxThrottle);
                 txt_ArmThrottle.Text = throttle.ToString();
 
                 // Update the config and send it to the device
@@ -371,9 +376,9 @@ namespace DroneLogger
         private async void btn_ThrottleDecrease_Click(object sender, RoutedEventArgs e)
         {
             if (int.TryParse(txt_ArmThrottle.Text, out int throttle) &&
-                int.TryParse(txt_MinSpeed.Text, out int minSpeed))
+                int.TryParse(txt_MinThrottle.Text, out int minThrottle))
             {
-                throttle = Math.Max(throttle - 1, minSpeed);
+                throttle = Math.Max(throttle - 1, minThrottle);
                 txt_ArmThrottle.Text = throttle.ToString();
 
                 // Update the config and send it to the device
@@ -400,8 +405,12 @@ namespace DroneLogger
             return new Config
             {
                 ArmThrottle = Tools.ParseInt(txt_ArmThrottle.Text, "Arm Throttle"),
-                MinSpeed = Tools.ParseInt(txt_MinSpeed.Text, "Min Speed"),
-                MaxSpeed = Tools.ParseInt(txt_MaxSpeed.Text, "Max Speed"),
+                HoverThrottle = Tools.ParseInt(txt_HoverThrottle.Text, "Hover Throttle"),
+                MinThrottle = Tools.ParseInt(txt_MinThrottle.Text, "Min Throttle"),
+                MaxThrottle = Tools.ParseInt(txt_MaxThrottle.Text, "Max Throttle"),
+                TakeoffAltitudeCm = Tools.ParseInt(
+                    txt_TakeoffAltitude.Text,
+                    "Takeoff Altitude"),
                 MaxAngle = Tools.ParseInt(txt_MaxAngle.Text, "Max Angle"),
                 TargetPitch = Tools.ParseInt(txt_TargetPitch.Text, "Target Pitch"),
                 TargetRoll = Tools.ParseInt(txt_TargetRoll.Text, "Target Roll"),
@@ -430,8 +439,13 @@ namespace DroneLogger
         private void LoadConfigToUI(Config config)
         {
             txt_ArmThrottle.Text = config.ArmThrottle.ToString();
-            txt_MinSpeed.Text = config.MinSpeed.ToString();
-            txt_MaxSpeed.Text = config.MaxSpeed.ToString();
+            txt_HoverThrottle.Text = config.HoverThrottle.ToString();
+            txt_MinThrottle.Text = config.MinThrottle.ToString();
+            txt_MaxThrottle.Text = config.MaxThrottle.ToString();
+            txt_TakeoffAltitude.Text =
+                (config.TakeoffAltitudeCm > 0
+                    ? config.TakeoffAltitudeCm
+                    : ProtocolPacketBuilder.DefaultTakeoffAltitudeCm).ToString();
             txt_MaxAngle.Text = config.MaxAngle.ToString();
             txt_TargetPitch.Text = config.TargetPitch.ToString();
             txt_TargetRoll.Text = config.TargetRoll.ToString();

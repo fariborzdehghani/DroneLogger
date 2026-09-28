@@ -52,8 +52,8 @@ public sealed class ProtocolPacketBuilderTests
         Assert.Equal((byte)0xFE, packet[6]);
         Assert.Equal((byte)(1234 & 0xFF), packet[7]);
         Assert.Equal((byte)(1234 >> 8), packet[8]);
-        Assert.Equal((byte)0, packet[13]); // Fixed altitude; reserved
-        Assert.Equal((byte)0, packet[14]);
+        Assert.Equal((byte)0x2C, packet[13]); // 300 cm = 0x012C
+        Assert.Equal((byte)0x01, packet[14]);
         Assert.Equal((byte)125, packet[15]); // 1.25 * 100
         Assert.Equal((byte)123, packet[16]); // 0.0123 * 10000
         Assert.Equal((byte)0, packet[17]);
@@ -63,7 +63,8 @@ public sealed class ProtocolPacketBuilderTests
         Assert.Equal((byte)0, packet[40]); // Reserved
         Assert.Equal((byte)125, packet[41]); // 12.5 %/s * 10
         Assert.Equal((byte)0, packet[42]);
-        Assert.All(packet.Skip(43), value => Assert.Equal((byte)0, value));
+        Assert.Equal((byte)60, packet[43]); // Hover throttle
+        Assert.All(packet.Skip(44), value => Assert.Equal((byte)0, value));
     }
 
     [Fact]
@@ -88,6 +89,16 @@ public sealed class ProtocolPacketBuilderTests
         unsafeTakeoffRamp.TakeoffThrottleRampPerSecond = 31.0;
         Assert.Throws<ArgumentOutOfRangeException>(
             () => ProtocolPacketBuilder.BuildConfigurationPacket(unsafeTakeoffRamp));
+
+        Config unsafeTakeoffAltitude = CreateValidConfig();
+        unsafeTakeoffAltitude.TakeoffAltitudeCm = 301;
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => ProtocolPacketBuilder.BuildConfigurationPacket(unsafeTakeoffAltitude));
+
+        Config unsafeHoverThrottle = CreateValidConfig();
+        unsafeHoverThrottle.HoverThrottle = 49;
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => ProtocolPacketBuilder.BuildConfigurationPacket(unsafeHoverThrottle));
     }
 
     [Fact]
@@ -103,11 +114,30 @@ public sealed class ProtocolPacketBuilderTests
             JsonSerializer.Serialize(config));
     }
 
+    [Fact]
+    public void ExistingSpeedLimitJsonMigratesToThrottleNames()
+    {
+        Config? config = ConfigurationManager.DeserializeConfiguration(
+            "{\"MinSpeed\":10,\"MaxSpeed\":80}");
+
+        Assert.NotNull(config);
+        Assert.Equal(10, config.MinThrottle);
+        Assert.Equal(80, config.MaxThrottle);
+
+        string updatedJson = JsonSerializer.Serialize(config);
+        Assert.Contains("\"MinThrottle\":10", updatedJson);
+        Assert.Contains("\"MaxThrottle\":80", updatedJson);
+        Assert.DoesNotContain("\"MinSpeed\"", updatedJson);
+        Assert.DoesNotContain("\"MaxSpeed\"", updatedJson);
+    }
+
     private static Config CreateValidConfig() => new()
     {
         ArmThrottle = 50,
-        MinSpeed = 10,
-        MaxSpeed = 80,
+        HoverThrottle = 60,
+        MinThrottle = 10,
+        MaxThrottle = 80,
+        TakeoffAltitudeCm = 300,
         MaxAngle = 30,
         TargetPitch = -300,
         TargetRoll = 1234,

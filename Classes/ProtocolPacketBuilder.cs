@@ -9,6 +9,9 @@ namespace DroneLogger.Classes
         public const double DefaultTakeoffThrottleRampPerSecond = 10.0;
         public const double MinTakeoffThrottleRampPerSecond = 1.0;
         public const double MaxTakeoffThrottleRampPerSecond = 30.0;
+        public const int DefaultTakeoffAltitudeCm = 50;
+        public const int MinTakeoffAltitudeCm = 20;
+        public const int MaxTakeoffAltitudeCm = 300;
 
         public static byte[] BuildArmPacket()
         {
@@ -46,10 +49,21 @@ namespace DroneLogger.Classes
             if (config == null) throw new ArgumentNullException(nameof(config));
 
             // Validate ranges per change request
-            if (config.MinSpeed < 0 || config.MinSpeed > 100) throw new ArgumentOutOfRangeException(nameof(config.MinSpeed));
-            if (config.MaxSpeed < 0 || config.MaxSpeed > 100) throw new ArgumentOutOfRangeException(nameof(config.MaxSpeed));
-            if (config.MaxSpeed < config.MinSpeed) throw new ArgumentOutOfRangeException("MaxSpeed must be >= MinSpeed");
-            if (config.ArmThrottle < config.MinSpeed || config.ArmThrottle > config.MaxSpeed) throw new ArgumentOutOfRangeException(nameof(config.ArmThrottle));
+            if (config.MinThrottle < 0 || config.MinThrottle > 100) throw new ArgumentOutOfRangeException(nameof(config.MinThrottle));
+            if (config.MaxThrottle < 0 || config.MaxThrottle > 100) throw new ArgumentOutOfRangeException(nameof(config.MaxThrottle));
+            if (config.MaxThrottle < config.MinThrottle) throw new ArgumentOutOfRangeException("MaxThrottle must be >= MinThrottle");
+            if (config.ArmThrottle < config.MinThrottle || config.ArmThrottle > config.MaxThrottle) throw new ArgumentOutOfRangeException(nameof(config.ArmThrottle));
+            if (config.HoverThrottle != 0 &&
+                (config.HoverThrottle < config.ArmThrottle ||
+                 config.HoverThrottle > config.MaxThrottle))
+            {
+                throw new ArgumentOutOfRangeException(nameof(config.HoverThrottle));
+            }
+            if (config.TakeoffAltitudeCm < MinTakeoffAltitudeCm ||
+                config.TakeoffAltitudeCm > MaxTakeoffAltitudeCm)
+            {
+                throw new ArgumentOutOfRangeException(nameof(config.TakeoffAltitudeCm));
+            }
             if (config.MaxAngle < 1 || config.MaxAngle > 90) throw new ArgumentOutOfRangeException(nameof(config.MaxAngle));
             if (config.PIDMaxIPart < 0 || config.PIDMaxIPart > 100) throw new ArgumentOutOfRangeException(nameof(config.PIDMaxIPart));
             if (config.PIDMaxOutput < 0 || config.PIDMaxOutput > 100) throw new ArgumentOutOfRangeException(nameof(config.PIDMaxOutput));
@@ -59,15 +73,15 @@ namespace DroneLogger.Classes
             b[0] = 1; // Configuration packet
 
             b[1] = ToByteChecked(config.ArmThrottle, nameof(config.ArmThrottle));
-            b[2] = ToByteChecked(config.MinSpeed, nameof(config.MinSpeed));
-            b[3] = ToByteChecked(config.MaxSpeed, nameof(config.MaxSpeed));
+            b[2] = ToByteChecked(config.MinThrottle, nameof(config.MinThrottle));
+            b[3] = ToByteChecked(config.MaxThrottle, nameof(config.MaxThrottle));
             b[4] = ToByteChecked(config.MaxAngle, nameof(config.MaxAngle));
 
             PutInt16LE(b, 5, config.TargetPitch);
             PutInt16LE(b, 7, config.TargetRoll);
             PutInt16LE(b, 9, config.TargetYaw);
             PutInt16LE(b, 11, config.TargetGz);
-            // Bytes 13-14 are reserved; altitude is fixed at 50 cm.
+            PutUInt16LE(b, 13, config.TakeoffAltitudeCm);
 
             // Pitch
             b[15] = (byte)ScaleChecked(config.PitchKp, 100, byte.MaxValue, nameof(config.PitchKp));
@@ -99,8 +113,9 @@ namespace DroneLogger.Classes
                     10,
                     ushort.MaxValue,
                     nameof(config.TakeoffThrottleRampPerSecond))); // 0.1 %/s
+            b[43] = ToByteChecked(config.HoverThrottle, nameof(config.HoverThrottle));
 
-            // Removed settings leave bytes 35 and 40 zero; bytes 43-63 remain zero.
+            // Removed settings leave bytes 35 and 40 zero; bytes 44-63 remain zero.
             return b;
         }
 

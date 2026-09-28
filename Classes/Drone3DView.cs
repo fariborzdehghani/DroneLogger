@@ -2,6 +2,7 @@ using DroneLogger.Classes;
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 
@@ -14,9 +15,15 @@ namespace DroneLogger
         private double _azimuthDeg = 45;
         private double _elevationDeg = 20;
         private double _distance = 3;
+        private Point3D _cameraTarget;
+        private Point _lastDragPosition;
+        private bool _isDragging;
+        private const double MinCameraDistance = 0.35;
+        private const double MaxCameraDistance = 8.0;
+        private const double ModelHeadingCorrectionDegrees = 90.0;
         private Model3DGroup _models = null!;
-        private GeometryModel3D _boxModel = null!;
-        private double _boxHalfHeight = 0.0;
+        private Model3DGroup _droneModel = null!;
+        private double _droneBottomOffset;
         private double _initAltitude = 0.0;
         private double _initYaw = 0.0;
         private double _initPitch = 0.0;
@@ -26,7 +33,17 @@ namespace DroneLogger
         /// <summary>
         /// Initialize and add the 3D view into the provided container (a Grid from XAML).
         /// </summary>
-        public void Initialize(Grid container, double initialAltitude = 0.0, double initialYaw = 0.0, double initialPitch = 0.0, double initialRoll = 0.0)
+        public void Initialize(
+            Grid container,
+            double initialAltitude = 0.0,
+            double initialYaw = 0.0,
+            double initialPitch = 0.0,
+            double initialRoll = 0.0,
+            bool showFrame = true,
+            double initialCameraDistance = 3.0,
+            double cameraTargetHeight = 0.0,
+            bool enableMouseWheelZoom = false,
+            bool enableMouseDragPan = false)
         {
             if (container == null) return;
 
@@ -35,16 +52,24 @@ namespace DroneLogger
             _initYaw = initialYaw;
             _initPitch = initialPitch;
             _initRoll = initialRoll;
+            _distance = Math.Clamp(
+                initialCameraDistance,
+                MinCameraDistance,
+                MaxCameraDistance);
+            _cameraTarget = new Point3D(
+                0.0,
+                Math.Max(0.0, cameraTargetHeight),
+                0.0);
 
             // Create border with black outline as rendering area
             _border = new Border
             {
-                BorderBrush = Brushes.Black,
-                BorderThickness = new Thickness(1),
+                BorderBrush = showFrame ? Brushes.Black : Brushes.Transparent,
+                BorderThickness = showFrame ? new Thickness(1) : new Thickness(0),
                 Background = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch,
-                Margin = new Thickness(10)
+                Margin = showFrame ? new Thickness(10) : new Thickness(0)
             };
 
             // Create Viewport3D
@@ -59,7 +84,7 @@ namespace DroneLogger
                 FarPlaneDistance = 200
             };
             _viewport.Camera = _camera;
-            // Set a comfortable angled view so the box perspective is visible (zoomed out)
+            // Set a comfortable angled view so the drone perspective is visible.
             SetCameraView(_azimuthDeg, _elevationDeg, _distance);
 
             // Lights
@@ -69,24 +94,14 @@ namespace DroneLogger
             // Directional to provide shading
             _models.Children.Add(new DirectionalLight(Color.FromRgb(230, 230, 230), new Vector3D(-1, -1, -2)));
 
-            // Create the box geometry
-            double boxHeight = 0.01;
-            _boxHalfHeight = boxHeight / 2.0;
-            var mesh = CreateBoxMesh(0.1, boxHeight, 0.1);
+            string droneModelPath = System.IO.Path.Combine(
+                AppContext.BaseDirectory, "Assets", "Drone", "scene.gltf");
+            LoadedDroneModel loadedDrone = GltfDroneModelLoader.Load(droneModelPath);
+            _droneModel = loadedDrone.Model;
+            _droneBottomOffset = -loadedDrone.LowestPoint;
+            _models.Children.Add(_droneModel);
 
-            // Light blue diffuse material with some specular to look shaded
-            var materialGroup = new MaterialGroup();
-            materialGroup.Children.Add(new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(173, 216, 230)))); // LightBlue
-            materialGroup.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(220, 220, 220)), 30));
-
-            _boxModel = new GeometryModel3D(mesh, materialGroup)
-            {
-                BackMaterial = materialGroup
-            };
-
-            _models.Children.Add(_boxModel);
-
-            // Apply initial transform so the box appears at the requested altitude and orientation
+            // Apply the requested initial altitude and orientation to the drone.
             ApplyInitialTransform();
 
             // Add the model group to the viewport
@@ -109,20 +124,134 @@ namespace DroneLogger
 
             // Put viewport into border and add to container
             _border.Child = _viewport;
+            if (enableMouseWheelZoom)
+            {
+                _border.PreviewMouseWheel += Border_PreviewMouseWheel;
+            }
+            if (enableMouseDragPan)
+            {
+                _border.Cursor = Cursors.SizeAll;
+                _border.PreviewMouseLeftButtonDown += Border_PreviewMouseLeftButtonDown;
+                _border.PreviewMouseMove += Border_PreviewMouseMove;
+                _border.PreviewMouseLeftButtonUp += Border_PreviewMouseLeftButtonUp;
+                _border.LostMouseCapture += Border_LostMouseCapture;
+            }
             container.Children.Add(_border);
+        }
+
+        private void Border_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            double zoomFactor = e.Delta > 0 ? 0.85 : 1.15;
+            _distance = Math.Clamp(
+                _distance * zoomFactor,
+                MinCameraDistance,
+                MaxCameraDistance);
+            SetCameraView(_azimuthDeg, _elevationDeg, _distance);
+
+            // Keep the parent chart ScrollViewer from scrolling while the
+            // pointer is deliberately zooming this compact 3D view.
+            e.Handled = true;
+        }
+
+        private void Border_PreviewMouseLeftButtonDown(
+            object sender,
+            MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left)
+            {
+                return;
+            }
+
+            _isDragging = true;
+            _lastDragPosition = e.GetPosition(_border);
+            _border.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void Border_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isDragging || e.LeftButton != MouseButtonState.Pressed)
+            {
+                return;
+            }
+
+            Point currentPosition = e.GetPosition(_border);
+            Vector drag = currentPosition - _lastDragPosition;
+            _lastDragPosition = currentPosition;
+
+            if (drag.LengthSquared < double.Epsilon)
+            {
+                return;
+            }
+
+            double viewportHeight = Math.Max(_border.ActualHeight, 1.0);
+            double visibleHeightAtTarget =
+                2.0 * _distance *
+                Math.Tan(_camera.FieldOfView * Math.PI / 360.0);
+            double worldUnitsPerPixel = visibleHeightAtTarget / viewportHeight;
+
+            Vector3D forward = _camera.LookDirection;
+            forward.Normalize();
+            Vector3D right = Vector3D.CrossProduct(
+                forward,
+                _camera.UpDirection);
+            right.Normalize();
+            Vector3D screenUp = Vector3D.CrossProduct(right, forward);
+            screenUp.Normalize();
+
+            // Translate the camera and its target opposite the horizontal drag
+            // and with the vertical drag so the scene follows the pointer.
+            Vector3D targetOffset =
+                (-right * drag.X + screenUp * drag.Y) *
+                worldUnitsPerPixel;
+            _cameraTarget += targetOffset;
+            SetCameraView(_azimuthDeg, _elevationDeg, _distance);
+            e.Handled = true;
+        }
+
+        private void Border_PreviewMouseLeftButtonUp(
+            object sender,
+            MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+            {
+                EndMouseDrag();
+                e.Handled = true;
+            }
+        }
+
+        private void Border_LostMouseCapture(object sender, MouseEventArgs e)
+        {
+            _isDragging = false;
+        }
+
+        private void EndMouseDrag()
+        {
+            _isDragging = false;
+            if (_border.IsMouseCaptured)
+            {
+                _border.ReleaseMouseCapture();
+            }
         }
 
         // Update the 3D model based on incoming log data (roll, pitch, yaw, altitude)
         public void Update(LogData data)
         {
-            if (data == null || _boxModel == null) return;
+            if (data == null || _droneModel == null) return;
 
             // Ensure update happens on UI thread
             System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 var tg = new Transform3DGroup();
 
-                // Apply rotations: pitch (X), yaw (Y), roll (Z)
+                // Align the model's nose with the simulator's forward axis before
+                // applying telemetry rotations in world coordinates.
+                tg.Children.Add(new RotateTransform3D(
+                    new AxisAngleRotation3D(
+                        new Vector3D(0, 1, 0),
+                        ModelHeadingCorrectionDegrees)));
+
+                // Apply rotations: roll (X), pitch (Z), yaw (Y).
                 var rollRotation = new AxisAngleRotation3D(new Vector3D(1, 0, 0), -data.roll);
                 var pitchRotation = new AxisAngleRotation3D(new Vector3D(0, 0, 1), -data.pitch);
                 var yawRotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -data.yaw);
@@ -131,36 +260,40 @@ namespace DroneLogger
                 tg.Children.Add(new RotateTransform3D(rollRotation));
                 tg.Children.Add(new RotateTransform3D(yawRotation));
 
-                // Translate so the bottom of the box sits at the reported altitude
+                // Translate so the bottom of the drone sits at the reported altitude.
                 // altitude from LogData is scaled by 0.01 in world units
                 double altitudeWorld = data.altitude * 0.01;
-                // centerY = altitudeWorld + halfHeight => bottom (centerY - halfHeight) = altitudeWorld
-                double centerY = altitudeWorld + _boxHalfHeight;
-                tg.Children.Add(new TranslateTransform3D(0, centerY, 0));
+                tg.Children.Add(new TranslateTransform3D(
+                    0, altitudeWorld + _droneBottomOffset, 0));
 
-                _boxModel.Transform = tg;
+                _droneModel.Transform = tg;
             });
         }
 
         private void ApplyInitialTransform()
         {
-            if (_boxModel == null) return;
+            if (_droneModel == null) return;
 
             var tg = new Transform3DGroup();
+
+            tg.Children.Add(new RotateTransform3D(
+                new AxisAngleRotation3D(
+                    new Vector3D(0, 1, 0),
+                    ModelHeadingCorrectionDegrees)));
 
             var rollRotation = new AxisAngleRotation3D(new Vector3D(1, 0, 0), _initRoll);
             var pitchRotation = new AxisAngleRotation3D(new Vector3D(0, 0, 1), _initPitch);
             var yawRotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), _initYaw);
 
             tg.Children.Add(new RotateTransform3D(pitchRotation));
-            tg.Children.Add(new RotateTransform3D(yawRotation));
             tg.Children.Add(new RotateTransform3D(rollRotation));
+            tg.Children.Add(new RotateTransform3D(yawRotation));
 
             double altitudeWorld = _initAltitude * 0.01;
-            double centerY = altitudeWorld + _boxHalfHeight;
-            tg.Children.Add(new TranslateTransform3D(0, centerY, 0));
+            tg.Children.Add(new TranslateTransform3D(
+                0, altitudeWorld + _droneBottomOffset, 0));
 
-            _boxModel.Transform = tg;
+            _droneModel.Transform = tg;
 
         }
 
@@ -181,7 +314,9 @@ namespace DroneLogger
             double y = distance * Math.Sin(el);
             double z = distance * Math.Cos(el) * Math.Cos(az);
 
-            _camera.Position = new Point3D(x, y, z);
+            // Orbit around the current target. Moving the target pans the scene
+            // without changing the viewing angle or zoom distance.
+            _camera.Position = _cameraTarget + new Vector3D(x, y, z);
             _camera.LookDirection = new Vector3D(-x, -y, -z);
         }
 

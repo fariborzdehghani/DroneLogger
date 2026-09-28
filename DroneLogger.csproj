@@ -15,6 +15,14 @@
 
   <ItemGroup>
     <Content Include="control.ico" />
+    <Content Include="D:\Electronic Projects\Flight Controller\04-Data\3D model\drone\scene.gltf">
+      <Link>Assets\Drone\scene.gltf</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="D:\Electronic Projects\Flight Controller\04-Data\3D model\drone\scene.bin">
+      <Link>Assets\Drone\scene.bin</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

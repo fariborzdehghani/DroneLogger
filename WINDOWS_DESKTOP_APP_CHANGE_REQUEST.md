@@ -43,7 +43,7 @@ Every command is exactly 64 bytes. There is no length prefix, delimiter, JSON, t
 
 | Byte 0 | Packet | Remaining fields |
 |---:|---|---|
-| 1 | Configuration | Bytes 1-42 as documented below; bytes 43-63 zero |
+| 1 | Configuration | Bytes 1-43 as documented below; bytes 44-63 zero |
 | 2 | Control | Byte 1 is the command; bytes 2-63 zero |
 | 3 | Heartbeat | Bytes 1-63 zero |
 
@@ -53,7 +53,7 @@ Control commands:
 |---:|---|
 | 0 | DISARM |
 | 1 | ARM |
-| 2 | TAKEOFF to the fixed 50 cm hover target |
+| 2 | TAKEOFF to the configured hover-altitude target |
 
 Create a single protocol class/module with constants and methods similar to:
 
@@ -76,14 +76,14 @@ All 16-bit values are little-endian: low byte first, then high byte. Target valu
 |---:|---|---|
 | 0 | Packet type | `1` |
 | 1 | Arm throttle | Unsigned byte; all motors start at this value after ARM |
-| 2 | Minimum speed | Unsigned byte |
-| 3 | Maximum speed | Unsigned byte |
+| 2 | Minimum throttle | Unsigned byte |
+| 3 | Maximum throttle | Unsigned byte |
 | 4 | Maximum angle | Unsigned byte |
 | 5-6 | Pitch target | Signed Int16, little-endian |
 | 7-8 | Roll target | Signed Int16, little-endian |
 | 9-10 | Yaw target | Signed Int16, little-endian |
 | 11-12 | Gz target | Signed Int16, little-endian |
-| 13-14 | Reserved | Zero; takeoff and altitude hold target is fixed at 50 cm |
+| 13-14 | Takeoff altitude | Centimeters as UInt16 LE; zero uses the legacy 50 cm default |
 | 15 | Pitch Kp | `round(value * 100)`, UInt8 |
 | 16-17 | Pitch Ki | `round(value * 10000)`, UInt16 LE |
 | 18-19 | Pitch Kd | `round(value * 1000)`, UInt16 LE |
@@ -101,15 +101,18 @@ All 16-bit values are little-endian: low byte first, then high byte. Target valu
 | 38-39 | Maximum PID output | `round(value * 10)`, UInt16 LE |
 | 40 | Reserved | Zero |
 | 41-42 | Takeoff throttle ramp | `%/s` encoded as `round(value * 10)`, UInt16 LE |
-| 43-63 | Reserved | Zero |
+| 43 | Hover throttle | Unsigned byte; zero asks firmware to use the midpoint between arm and maximum throttle |
+| 44-63 | Reserved | Zero |
 
 Validate values before conversion. Do not silently wrap an out-of-range number during a cast.
 
 At minimum, enforce the firmware's current safety constraints:
 
-- minimum speed: 0-100;
-- maximum speed: 0-100 and greater than or equal to minimum speed;
-- arm throttle: between minimum and maximum speed;
+- minimum throttle: 0-100;
+- maximum throttle: 0-100 and greater than or equal to minimum throttle;
+- arm throttle: between minimum and maximum throttle;
+- hover throttle: zero for automatic estimation, otherwise between arm and maximum throttle;
+- takeoff altitude: 20-300 cm;
 - maximum angle: 1-90;
 - takeoff throttle ramp: 1.0-30.0 %/s;
 - maximum PID I part: 0-100;
@@ -121,9 +124,13 @@ Throttle workflow:
 
 - `DISARMED`: motor output is zero.
 - `ARMED`: all four motors run equally at the configured arm throttle.
-- `TAKEOFF`: firmware ramps collective upward from arm throttle toward maximum speed.
-- When SRF05 reaches the fixed 50 cm target, firmware captures the achieved collective.
-- `FLYING`: altitude hold keeps that captured collective as feed-forward and applies altitude PID correction around it.
+- `TAKEOFF`: firmware ramps from arm throttle with a motor-output ceiling of the lesser of maximum throttle and hover throttle plus 5 percentage points.
+- Liftoff requires a measured rise of 5 cm above the starting SRF05 height for 150 ms. If the sensor starts below range, its first usable reading establishes that starting height. The ramp pauses while confirming the rise.
+- Liftoff must be confirmed within the calculated ramp duration plus 1 second, capped at 10 seconds. Missing SRF05 data or failure to lift cannot extend this window. Very slow configured ramps may time out before reaching the ceiling.
+- After liftoff, altitude PID starts at the current height. Its target moves toward the requested height at 20 cm/s while the base throttle slews toward hover throttle. This limits the target's speed; actual climb speed depends on tuning and the aircraft.
+- `FLYING`: entered after the moving target reaches the final height and the aircraft stays within 5 cm for 500 ms (also within 0.15 m/s vertically when Vz is valid). The altitude controller continues without resetting or changing its target/base throttle at the state transition.
+- The total takeoff timeout includes the liftoff budget, requested height / 20 cm/s, and 5 seconds to settle. Altitude loss after the first usable reading remains an emergency motor stop, using the existing brief-dropout tolerance, not automatic landing.
+- Packet fields, byte offsets, and validation ranges are unchanged. Hover throttle should be measured; the legacy midpoint fallback is only an initial estimate.
 
 The firmware rejects configuration changes while flying. Disable the configuration-send action while the desktop state is armed, and require an explicit DISARM first.
 
