@@ -8,6 +8,15 @@ namespace DroneLogger.PacketTests;
 public sealed class ProtocolPacketBuilderTests
 {
     [Fact]
+    public void OperatorTimeoutDisarm_LeavesReservedCommandBytesZero()
+    {
+        byte[] packet = ProtocolPacketBuilder.BuildDisarmPacket(operatorLinkTimeout: true);
+        Assert.Equal(64, packet.Length);
+        Assert.Equal(new byte[] { 2, 0, 1 }, packet.Take(3).ToArray());
+        Assert.All(packet.Skip(3), value => Assert.Equal((byte)0, value));
+    }
+
+    [Fact]
     public void ControlAndHeartbeatPacketsMatchFirmwareProtocol()
     {
         byte[] arm = ProtocolPacketBuilder.BuildArmPacket();

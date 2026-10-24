@@ -4,6 +4,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
@@ -19,6 +20,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\DroneLogger.csproj" />
+    <None Update="Fixtures\flight-log-v1.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\diagnostics-v2.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v3.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v4.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v5.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v5-8g.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v6.bin" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\flight-log-v7.bin" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

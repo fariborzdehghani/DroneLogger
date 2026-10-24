@@ -20,6 +20,8 @@ namespace DroneLogger.Classes
         private PidPlotter pidPlotter;
 
         public event EventHandler<bool>? PortStateChanged;
+        internal bool ShowLiveTelemetry { get; set; } = true;
+        internal Func<string, bool>? FlightLogLineHandler { get; set; }
 
         private const double MIN_CIRCLE_SIZE = 20;
         private const double MAX_CIRCLE_SIZE = 70;
@@ -217,6 +219,7 @@ namespace DroneLogger.Classes
         /// </summary>
         internal void ProcessDiagnosticLine(string line)
         {
+            if (FlightLogLineHandler?.Invoke(line) == true) return;
             if (string.IsNullOrWhiteSpace(line))
             {
                 return;
@@ -237,72 +240,10 @@ namespace DroneLogger.Classes
                             return;
                         }
 
-                        // Existing updates
-                        context.lbl_Roll.Content = logData.roll.ToString("F2");
-                        context.lbl_Pitch.Content = logData.pitch.ToString("F2");
-                        context.lbl_Yaw.Content = logData.yaw.ToString("F2");
-                        // Gz display removed from UI
-                        // Vz (vertical velocity) - only show and plot when valid flag set by device
-                        if (logData.Vz_valid == 1)
+                        if (ShowLiveTelemetry)
                         {
-                            if (context.lbl_Vz != null) context.lbl_Vz.Content = logData.Vz.ToString("F2");
-                            if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = logData.Vz.ToString("F2") + " m/s";
-                        }
-                        else
-                        {
-                            if (context.lbl_Vz != null) context.lbl_Vz.Content = "N/A";
-                            if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = "N/A";
-                            // mark as NaN so plots will show a gap
-                            logData.Vz = double.NaN;
-                        }
-                        context.lbl_Altitude.Content = logData.altitude.ToString("F2");
-                        // Update canvas tab labels
-                        context.lbl_Canvas_Roll.Text = logData.roll.ToString("F2") + "°";
-                        context.lbl_Canvas_Pitch.Text = logData.pitch.ToString("F2") + "°";
-                        context.lbl_Canvas_Yaw.Text = logData.yaw.ToString("F2") + "°";
-                        context.lbl_Canvas_Altitude.Text = logData.altitude.ToString("F2") + " cm";
-                        if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = logData.Vz.ToString("F2") + " m/s";
-                        // Update new compass UI
-                        context.lbl_YawNumeric.Text = logData.yaw.ToString("F2") + "°";
-                        // Rotate the needle around the compass center (90,90)
-                        // Use negative angle so increasing yaw rotates the needle counter-clockwise
-                        RotateTransform yawRotate = new RotateTransform(logData.yaw, 90, 90);
-                        context.YawNeedle.RenderTransform = yawRotate;
-                        context.lbl_Motor1_Value.Content = logData.base_throttle.ToString("F2");
-                        context.lbl_Motor2_Value.Content = logData.base_throttle.ToString("F2");
-                        context.lbl_Motor3_Value.Content = logData.base_throttle.ToString("F2");
-                        context.lbl_Motor4_Value.Content = logData.base_throttle.ToString("F2");
-                        context.lbl_Motor1_PID.Content = (logData.m1 - logData.base_throttle).ToString("F2");
-                        context.lbl_Motor2_PID.Content = (logData.m2 - logData.base_throttle).ToString("F2");
-                        context.lbl_Motor3_PID.Content = (logData.m3 - logData.base_throttle).ToString("F2");
-                        context.lbl_Motor4_PID.Content = (logData.m4 - logData.base_throttle).ToString("F2");
-                        context.lbl_Motor1_ModifiedValue.Content = logData.m1.ToString("F2");
-                        context.lbl_Motor2_ModifiedValue.Content = logData.m2.ToString("F2");
-                        context.lbl_Motor3_ModifiedValue.Content = logData.m3.ToString("F2");
-                        context.lbl_Motor4_ModifiedValue.Content = logData.m4.ToString("F2");
-                        context.lbl_Roll_P.Content = logData.roll_p.ToString("F2");
-                        context.lbl_Roll_I.Content = logData.roll_i.ToString("F2");
-                        context.lbl_Roll_D.Content = logData.roll_d.ToString("F2");
-                        context.lbl_Pitch_P.Content = logData.pitch_p.ToString("F2");
-                        context.lbl_Pitch_I.Content = logData.pitch_i.ToString("F2");
-                        context.lbl_Pitch_D.Content = logData.pitch_d.ToString("F2");
-                        // Gz PID displays removed from UI
-                        context.lbl_Altitude_P.Content = logData.altitude_p.ToString("F2");
-                        context.lbl_Altitude_I.Content = logData.altitude_i.ToString("F2");
-                        context.lbl_Altitude_D.Content = logData.altitude_d.ToString("F2");
-
-                        UpdateHorizon(logData.roll, logData.pitch);
-                        if (logData != null)
-                        {
-                            UpdateMotorIndicators(logData.m1, logData.m2, logData.m3, logData.m4);
-                            pidPlotter.UpdatePlots(logData);
-                            // Keep both the full simulator and compact main-tab view in sync.
-                            try
-                            {
-                                context.Drone3D?.Update(logData);
-                                context.CompactDrone3D?.Update(logData);
-                            }
-                            catch { }
+                            DisplayTelemetry(logData);
+                            context.sessionManager?.AddDataPoint(logData);
                         }
                     }
 
@@ -335,6 +276,83 @@ namespace DroneLogger.Classes
                     Tools.Log(context, $"Telemetry update error: {ex.Message}");
                 }
             });
+        }
+
+        // Used on the UI thread for live data and recorded playback alike.
+        internal void DisplayTelemetry(LogData logData, bool updatePlots = true)
+        {
+            // Existing updates
+            context.lbl_Roll.Content = logData.roll.ToString("F2");
+            context.lbl_Pitch.Content = logData.pitch.ToString("F2");
+            context.lbl_Yaw.Content = double.IsFinite(logData.yaw) ? logData.yaw.ToString("F2") : "N/A";
+            // Gz display removed from UI
+            // Vz (vertical velocity) - only show and plot when valid flag set by device
+            if (logData.Vz_valid == 1)
+            {
+                if (context.lbl_Vz != null) context.lbl_Vz.Content = logData.Vz.ToString("F2");
+                if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = logData.Vz.ToString("F2") + " m/s";
+            }
+            else
+            {
+                if (context.lbl_Vz != null) context.lbl_Vz.Content = "N/A";
+                if (context.lbl_Canvas_Vz != null) context.lbl_Canvas_Vz.Text = "N/A";
+                // Keep the recorded value intact; plots mask invalid samples.
+            }
+            context.lbl_Altitude.Content = logData.altitude_valid ? logData.altitude.ToString("F2") : "N/A";
+            // Update canvas tab labels
+            context.lbl_Canvas_Roll.Text = logData.roll.ToString("F2") + "°";
+            context.lbl_Canvas_Pitch.Text = logData.pitch.ToString("F2") + "°";
+            context.lbl_Canvas_Yaw.Text = double.IsFinite(logData.yaw) ? logData.yaw.ToString("F2") + "°" : "N/A";
+            context.lbl_Canvas_Altitude.Text = logData.altitude_valid ? logData.altitude.ToString("F2") + " cm" : "N/A";
+            // Update new compass UI
+            context.lbl_YawNumeric.Text = double.IsFinite(logData.yaw) ? logData.yaw.ToString("F2") + "°" : "N/A";
+            // Rotate the needle around the compass center (90,90)
+            // Use negative angle so increasing yaw rotates the needle counter-clockwise
+            RotateTransform yawRotate = new RotateTransform(double.IsFinite(logData.yaw) ? logData.yaw : 0, 90, 90);
+            context.YawNeedle.RenderTransform = yawRotate;
+            context.lbl_Motor1_Value.Content = logData.base_throttle.ToString("F2");
+            context.lbl_Motor2_Value.Content = logData.base_throttle.ToString("F2");
+            context.lbl_Motor3_Value.Content = logData.base_throttle.ToString("F2");
+            context.lbl_Motor4_Value.Content = logData.base_throttle.ToString("F2");
+            context.lbl_Motor1_PID.Content = (logData.m1 - logData.base_throttle).ToString("F2");
+            context.lbl_Motor2_PID.Content = (logData.m2 - logData.base_throttle).ToString("F2");
+            context.lbl_Motor3_PID.Content = (logData.m3 - logData.base_throttle).ToString("F2");
+            context.lbl_Motor4_PID.Content = (logData.m4 - logData.base_throttle).ToString("F2");
+            context.lbl_Motor1_ModifiedValue.Content = logData.m1.ToString("F2");
+            context.lbl_Motor2_ModifiedValue.Content = logData.m2.ToString("F2");
+            context.lbl_Motor3_ModifiedValue.Content = logData.m3.ToString("F2");
+            context.lbl_Motor4_ModifiedValue.Content = logData.m4.ToString("F2");
+            context.lbl_Roll_P.Content = logData.roll_p.ToString("F2");
+            context.lbl_Roll_I.Content = logData.roll_i.ToString("F2");
+            context.lbl_Roll_D.Content = logData.roll_d.ToString("F2");
+            context.lbl_Pitch_P.Content = logData.pitch_p.ToString("F2");
+            context.lbl_Pitch_I.Content = logData.pitch_i.ToString("F2");
+            context.lbl_Pitch_D.Content = logData.pitch_d.ToString("F2");
+            // Gz PID displays removed from UI
+            context.lbl_Altitude_P.Content = double.IsFinite(logData.altitude_p) ? logData.altitude_p.ToString("F2") : "N/A";
+            context.lbl_Altitude_I.Content = double.IsFinite(logData.altitude_i) ? logData.altitude_i.ToString("F2") : "N/A";
+            context.lbl_Altitude_D.Content = double.IsFinite(logData.altitude_d) ? logData.altitude_d.ToString("F2") : "N/A";
+
+            if (double.IsFinite(logData.roll) && double.IsFinite(logData.pitch))
+                UpdateHorizon(logData.roll, logData.pitch);
+            if (logData != null)
+            {
+                UpdateMotorIndicators(logData.m1, logData.m2, logData.m3, logData.m4);
+                if (updatePlots) pidPlotter.UpdatePlots(logData);
+                // Keep both the full simulator and compact main-tab view in sync.
+                try
+                {
+                    if (double.IsFinite(logData.roll) && double.IsFinite(logData.pitch) &&
+                        double.IsFinite(logData.altitude))
+                    {
+                        var attitude = new LogData { roll = logData.roll, pitch = logData.pitch,
+                            yaw = double.IsFinite(logData.yaw) ? logData.yaw : 0, altitude = logData.altitude };
+                        context.Drone3D?.Update(attitude);
+                        context.CompactDrone3D?.Update(attitude);
+                    }
+                }
+                catch { }
+            }
         }
 
         // Event handler for log serial port errors
@@ -371,7 +389,7 @@ namespace DroneLogger.Classes
         private void UpdateMotorCircle(Ellipse circle, TextBlock textBlock, double speed)
         {
             // Normalize speed value between 0 and 1
-            double normalizedSpeed = speed / 100;
+            double normalizedSpeed = double.IsFinite(speed) ? Math.Clamp(speed / 100, 0, 1) : 0;
 
             // Calculate new size
             double newSize = MIN_CIRCLE_SIZE + (MAX_CIRCLE_SIZE - MIN_CIRCLE_SIZE) * normalizedSpeed;

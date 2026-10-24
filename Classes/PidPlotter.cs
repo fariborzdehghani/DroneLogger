@@ -3,6 +3,7 @@ using ScottPlot.Interactivity.UserActionResponses;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Threading;
+using DroneLogger.Model;
 
 namespace DroneLogger.Classes
 {
@@ -12,6 +13,10 @@ namespace DroneLogger.Classes
 
         private const int MAX_POINTS = 100;
         private int dataPointIndex = 0;
+        private double currentX;
+        private int pointLimit = MAX_POINTS;
+        private Config? recordedConfiguration;
+        private bool batchLoading;
         private bool isPaused;
     // configurable Y axis ranges for Vz (vertical velocity)
     public double VzYMin { get; set; } = -5;
@@ -205,36 +210,59 @@ namespace DroneLogger.Classes
                 return;
 
             // Batch all plot updates before refreshing
+            currentX = recordedConfiguration != null ? dataPoint.elapsed_ms / 1000.0 : dataPointIndex;
             UpdateRollData(dataPoint);
             UpdatePitchData(dataPoint);
 
             // Single refresh for all plots
-            context.Dispatcher.BeginInvoke(() =>
-            {
-                rollPIDPlot.Refresh();
-                pitchPIDPlot.Refresh();
-                rollPlot.Refresh();
-                pitchPlot.Refresh();
-                altitudePlot?.Refresh();
-                vzPlot?.Refresh();
-                yawPlot?.Refresh();
-            }, DispatcherPriority.Background);
+            if (!batchLoading) RefreshPlots();
 
             dataPointIndex++;
+        }
+
+        public void BeginRecordedLog(FlightLogSession session)
+        {
+            Reset();
+            recordedConfiguration = session.Configuration;
+            pointLimit = FlightLogProtocol.Capacity;
+        }
+
+        public void LoadRecordedLog(FlightLogSession session, int? sampleCount = null)
+        {
+            BeginRecordedLog(session);
+            batchLoading = true;
+            try { foreach (var sample in session.Samples.Take(sampleCount ?? session.Samples.Count)) UpdatePlots(sample); }
+            finally { batchLoading = false; }
+            RefreshPlots();
+        }
+
+        private void RefreshPlots()
+        {
+            foreach (var plot in new[] { rollPIDPlot, pitchPIDPlot, rollPlot, pitchPlot, altitudePlot, vzPlot, yawPlot })
+            {
+                if (recordedConfiguration != null)
+                {
+                    plot.Plot.Axes.AutoScale();
+                    // ScottPlot requires a nonzero X span, even for a single event.
+                    plot.Plot.Axes.SetLimitsX(0, Math.Max(0.1, currentX));
+                }
+                plot.Plot.XLabel(recordedConfiguration != null ? "Time (s)" : "Sample");
+                plot.Refresh();
+            }
         }
 
         private void UpdateRollData(LogData dataPoint)
         {
             AddPIDPoint(
-                dataPointIndex,
+                currentX,
                 dataPoint.roll_p, dataPoint.roll_i, dataPoint.roll_d, dataPoint.roll_total,
                 rollPidX, rollP, rollI, rollD, rollT,
                 rollPIDPlot);
 
             AddAnglePoint(
-                dataPointIndex,
+                currentX,
                 dataPoint.roll,
-                double.Parse(context.txt_TargetRoll.Text),
+                recordedConfiguration?.TargetRoll ?? ParseTarget(context.txt_TargetRoll.Text),
                 rollX,
                 rollActual,
                 rollTarget,
@@ -246,26 +274,31 @@ namespace DroneLogger.Classes
         private void UpdatePitchData(LogData dataPoint)
         {
             AddPIDPoint(
-                dataPointIndex,
+                currentX,
                 dataPoint.pitch_p, dataPoint.pitch_i, dataPoint.pitch_d, dataPoint.pitch_total,
                 pitchPidX, pitchP, pitchI, pitchD, pitchT,
                 pitchPIDPlot);
 
             AddAnglePoint(
-                dataPointIndex,
+                currentX,
                 dataPoint.pitch,
-                double.Parse(context.txt_TargetPitch.Text),
+                recordedConfiguration?.TargetPitch ?? ParseTarget(context.txt_TargetPitch.Text),
                 pitchX,
                 pitchActual,
                 pitchTarget,
                 pitchActualPlot,
                 pitchTargetPlot,
                 pitchPlot);
-            AddAltitudeYawPoint(dataPointIndex, dataPoint.altitude, dataPoint.Vz, dataPoint.yaw, altitudeX, altitudeValues, vzX, vzValues, yawX, yawValues, altitudePlotObj, vzPlotObj, yawPlotObj, altitudePlot, vzPlot, yawPlot);
+            AddAltitudeYawPoint(currentX,
+                dataPoint.altitude_valid ? dataPoint.altitude : double.NaN,
+                dataPoint.Vz_valid == 1 ? dataPoint.Vz : double.NaN,
+                dataPoint.yaw, altitudeX, altitudeValues, vzX, vzValues, yawX, yawValues, altitudePlotObj, vzPlotObj, yawPlotObj, altitudePlot, vzPlot, yawPlot);
         }
 
+        private static double ParseTarget(string text) => double.TryParse(text, out double value) ? value : 0;
+
         private void AddAltitudeYawPoint(
-            int index,
+            double index,
             double altitude,
             double vz,
             double yaw,
@@ -279,7 +312,7 @@ namespace DroneLogger.Classes
             altX.Add(index);
             altList.Add(altitude);
 
-            if (altX.Count > MAX_POINTS)
+            if (altX.Count > pointLimit)
             {
                 altX.RemoveAt(0);
                 altList.RemoveAt(0);
@@ -295,7 +328,7 @@ namespace DroneLogger.Classes
             yawXList.Add(index);
             yawList.Add(yaw);
 
-            if (yawXList.Count > MAX_POINTS)
+            if (yawXList.Count > pointLimit)
             {
                 yawXList.RemoveAt(0);
                 yawList.RemoveAt(0);
@@ -311,7 +344,7 @@ namespace DroneLogger.Classes
             vzXList.Add(index);
             vzList.Add(vz);
 
-            if (vzXList.Count > MAX_POINTS)
+            if (vzXList.Count > pointLimit)
             {
                 vzXList.RemoveAt(0);
                 vzList.RemoveAt(0);
@@ -325,7 +358,7 @@ namespace DroneLogger.Classes
         }
 
         private void AddPIDPoint(
-            int index,
+            double index,
             double kp, double ki, double kd, double total, // add total parameter
             List<double> xList,
             List<double> pList, List<double> iList, List<double> dList, List<double> tList,
@@ -338,7 +371,7 @@ namespace DroneLogger.Classes
             tList.Add(total); // use total from LogData
 
             // Maintain MAX_POINTS
-            if (xList.Count > MAX_POINTS)
+            if (xList.Count > pointLimit)
             {
                 xList.RemoveAt(0);
                 pList.RemoveAt(0);
@@ -354,7 +387,7 @@ namespace DroneLogger.Classes
         }
 
         private void AddAnglePoint(
-            int index,
+            double index,
             double actual,
             double target,
             List<double> xList,
@@ -371,7 +404,7 @@ namespace DroneLogger.Classes
             targetList.Add(target);
 
             // Maintain MAX_POINTS
-            if (xList.Count > MAX_POINTS)
+            if (xList.Count > pointLimit)
             {
                 xList.RemoveAt(0);
                 actualList.RemoveAt(0);
@@ -385,6 +418,9 @@ namespace DroneLogger.Classes
 
         public void Reset()
         {
+            recordedConfiguration = null;
+            pointLimit = MAX_POINTS;
+            currentX = 0;
             dataPointIndex = 0;
             ClearData();
             isPaused = false;  // Ensure plot is not paused after reset
@@ -407,6 +443,9 @@ namespace DroneLogger.Classes
             yawPlot?.Plot.Clear();
             yawPlot?.Refresh();
 
+            vzPlot.Plot.Clear();
+            vzPlot.Refresh();
+
             InitializePlots();
         }
 
@@ -428,6 +467,12 @@ namespace DroneLogger.Classes
             pitchX.Clear();
             pitchActual.Clear();
             pitchTarget.Clear();
+            altitudeX.Clear();
+            altitudeValues.Clear();
+            vzX.Clear();
+            vzValues.Clear();
+            yawX.Clear();
+            yawValues.Clear();
         }
     }
 }

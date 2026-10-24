@@ -21,11 +21,12 @@ namespace DroneLogger.Classes
             return b;
         }
 
-        public static byte[] BuildDisarmPacket()
+        public static byte[] BuildDisarmPacket(bool operatorLinkTimeout = false)
         {
             var b = new byte[PacketSize];
             b[0] = 2; // Control
             b[1] = 0; // DISARM
+            b[2] = operatorLinkTimeout ? (byte)1 : (byte)0;
             return b;
         }
 

@@ -11,21 +11,23 @@ namespace DroneLogger.Classes
         private CancellationTokenSource? heartbeatCts;
         private volatile bool heartbeatEnabled = true;
         private volatile bool isArmed;
+        private volatile bool isTakeoffActive;
         private bool serialMode;
 
         public event EventHandler<ConnectionState>? ConnectionStateChanged;
         public event EventHandler<bool>? ArmedStateChanged;
 
         public bool IsArmed => isArmed;
+        public bool IsTakeoffActive => isTakeoffActive;
         public bool IsConnected => serialMode
             ? logger?.IsLogPortOpen() == true
             : radioConnection.IsConnected;
         public bool IsSerialMode => serialMode;
 
-        public Transmitter(MainWindow context)
+        public Transmitter(MainWindow context, SerialConnectionService? connection = null)
         {
             this.context = context;
-            radioConnection = new SerialConnectionService();
+            radioConnection = connection ?? new SerialConnectionService();
             radioConnection.LineReceived += RadioConnection_LineReceived;
             radioConnection.ConnectionStateChanged += RadioConnection_StateChanged;
         }
@@ -93,6 +95,7 @@ namespace DroneLogger.Classes
                     ct).ConfigureAwait(false);
 
                 StopHeartbeat();
+                isTakeoffActive = false;
                 if (isArmed)
                 {
                     isArmed = false;
@@ -120,6 +123,7 @@ namespace DroneLogger.Classes
                     ProtocolPacketBuilder.BuildTakeoffPacket(),
                     PacketPriority.Normal,
                     ct).ConfigureAwait(false);
+                isTakeoffActive = true;
             }
             finally
             {
@@ -346,6 +350,11 @@ namespace DroneLogger.Classes
 
         private void RadioConnection_LineReceived(object? sender, string line)
         {
+            if (line.StartsWith("FlightLog=", StringComparison.Ordinal))
+            {
+                logger?.ProcessDiagnosticLine(line);
+                return;
+            }
             bool isDataLog =
                 Logger.TryExtractMessagePayload(line, "Data", out _);
             Tools.Log(
@@ -383,6 +392,7 @@ namespace DroneLogger.Classes
         private void ResetArmedStateAfterConnectionLoss()
         {
             StopHeartbeat();
+            isTakeoffActive = false;
             if (isArmed)
             {
                 isArmed = false;

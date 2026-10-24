@@ -17,16 +17,22 @@ namespace DroneLogger
         public SessionManager sessionManager;
         private bool shutdownInProgress;
         private bool shutdownComplete;
+        private bool initialPanelWidthsSet;
+        private GridLength expandedControlsWidth = new GridLength(1, GridUnitType.Star);
+        private GridLength expandedGraphsWidth = new GridLength(1, GridUnitType.Star);
         // 3D view helper
         public Drone3DView? Drone3D { get; private set; }
         public Drone3DView? CompactDrone3D { get; private set; }
 
-        public MainWindow()
+        public MainWindow() : this(null) { }
+
+        internal MainWindow(SerialConnectionService? radioConnection)
         {
             InitializeComponent();
-            transmitter = new Transmitter(this);
+            transmitter = new Transmitter(this, radioConnection);
             logger = new Logger(this);
             transmitter.AttachLogger(logger);
+            InitializeFlightLogs();
             sessionManager = new SessionManager(logger);
 
             // Wire transmitter events to update UI automatically
@@ -62,12 +68,59 @@ namespace DroneLogger
             logger.PortStateChanged += (_, _) =>
                 DispatchUiUpdate(UpdateCommandControls);
 
-            // Add keyboard support
-            this.KeyDown += Window_KeyDown;
-
             DataContext = this;
 
             transmitter.SetSerialMode(IsSerialMode());
+        }
+
+        private void MainContentGrid_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (initialPanelWidthsSet)
+            {
+                return;
+            }
+
+            // Reserve enough width for the four cards, including the graph scrollbar.
+            double cardsWidth = GraphCardsWrapPanel.Children.OfType<FrameworkElement>()
+                .Sum(card => card.DesiredSize.Width);
+            double graphsWidth = cardsWidth + MainGraphsPanel.Margin.Left +
+                MainGraphsPanel.Margin.Right + SystemParameters.VerticalScrollBarWidth;
+            double availableWidth = MainContentGrid.ActualWidth - MainDividerColumn.ActualWidth;
+            graphsWidth = Math.Min(graphsWidth,
+                Math.Max(MainGraphsColumn.MinWidth, availableWidth - MainControlsColumn.MinWidth));
+
+            MainGraphsColumn.Width = new GridLength(graphsWidth);
+            MainControlsColumn.Width = new GridLength(1, GridUnitType.Star);
+            initialPanelWidthsSet = true;
+        }
+
+        private void MainLeftPanel_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            // Scroll the settings when necessary while keeping a visible log below them.
+            double logSpace = LogControlsPanel.DesiredSize.Height +
+                txt_Log.Margin.Top + txt_Log.Margin.Bottom + 80;
+            MainSettingsScrollViewer.MaxHeight = Math.Max(0, e.NewSize.Height - logSpace);
+        }
+
+        private void GraphPanelToggleButton_Click(object sender, RoutedEventArgs e)
+        {
+            bool collapse = MainGraphsPanel.Visibility == Visibility.Visible;
+            if (collapse)
+            {
+                expandedControlsWidth = MainControlsColumn.Width;
+                expandedGraphsWidth = MainGraphsColumn.Width;
+            }
+
+            MainGraphsPanel.Visibility = collapse ? Visibility.Collapsed : Visibility.Visible;
+            MainPanelDivider.Visibility = collapse ? Visibility.Collapsed : Visibility.Visible;
+            MainDividerColumn.Width = new GridLength(collapse ? 0 : 6);
+            MainGraphsColumn.MinWidth = collapse ? 0 : 240;
+            MainGraphsColumn.Width = collapse ? new GridLength(0) : expandedGraphsWidth;
+            MainControlsColumn.Width = collapse ? new GridLength(1, GridUnitType.Star) : expandedControlsWidth;
+            GraphPanelToggleButton.Content = collapse ? "\u276E" : "\u276F";
+            GraphPanelToggleButton.ToolTip = collapse ? "Expand graphs" : "Collapse graphs to the right";
+            System.Windows.Automation.AutomationProperties.SetName(
+                GraphPanelToggleButton, collapse ? "Expand graphs" : "Collapse graphs");
         }
 
         private void DispatchUiUpdate(Action update)
@@ -128,6 +181,10 @@ namespace DroneLogger
             }
 
             shutdownInProgress = true;
+            downloadCancellation?.Cancel();
+            downloadTimingTimer.Stop();
+            downloadClock.Stop();
+            StopPlayback();
             IsEnabled = false;
             sessionManager.EndCurrentSession();
             try
@@ -252,6 +309,7 @@ namespace DroneLogger
         {
             try
             {
+                PrepareLiveFlight();
                 await transmitter.ArmAsync();
                 Tools.Log(this, "ARM requested: motors will start at arm throttle");
             }
@@ -265,6 +323,8 @@ namespace DroneLogger
         {
             try
             {
+                takeoffStopRequested = true;
+                downloadCancellation?.Cancel();
                 await transmitter.DisarmAsync();
                 Tools.Log(this, "DISARM requested");
             }
@@ -276,15 +336,7 @@ namespace DroneLogger
 
         private async void btn_Takeoff_Click(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                await transmitter.TakeoffAsync();
-                Tools.Log(this, "TAKEOFF requested: bounded liftoff ramp, then controlled climb to target height");
-            }
-            catch (Exception ex)
-            {
-                Tools.Log(this, $"TAKEOFF error: {ex.Message}");
-            }
+            await ToggleTakeoffAsync();
         }
 
         private void chk_Heartbeat_Checked(object sender, RoutedEventArgs e)
@@ -495,13 +547,21 @@ namespace DroneLogger
 
             bool connected = transmitter.IsConnected;
             bool armed = transmitter.IsArmed;
-            btn_Arm.IsEnabled = connected;
-            btn_Takeoff.IsEnabled = connected && armed;
+            bool downloading = downloadCancellation != null;
+            btn_Arm.IsEnabled = connected && !downloading && !takeoffStartPending;
+            btn_Takeoff.IsEnabled = connected && (armed || takeoffStartPending) && !downloading;
+            btn_Takeoff.Content = transmitter.IsTakeoffActive || takeoffStartPending ? "STOP (Space)" : "TAKE OFF (Space)";
             btn_Disarm.IsEnabled = connected;
-            btn_SetConfig.IsEnabled = connected && !armed;
-            btn_ThrottleIncrease.IsEnabled = connected && !armed;
-            btn_ThrottleDecrease.IsEnabled = connected && !armed;
+            btn_SetConfig.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
+            btn_ThrottleIncrease.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
+            btn_ThrottleDecrease.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
             chk_HeartbeatEnabled.IsEnabled = !armed;
+            btn_DownloadFlightLog.IsEnabled = connected && !armed && !takeoffStartPending;
+            btn_DownloadFlightLog.Content = downloading ? "Cancel download" : "Download diagnostics";
+            btn_PlayFlightLog.IsEnabled = recordedFlight != null && !armed && !downloading && !takeoffStartPending;
+            btn_OpenFlightLog.IsEnabled = !armed && !downloading && !takeoffStartPending;
+            UpdateFlightReviewControls();
+            if (!connected) downloadCancellation?.Cancel();
 
             cmb_ConnectionType.IsEnabled =
                 !transmitter.IsTransmitPortOpen() && !logger.IsLogPortOpen();
