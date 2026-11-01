@@ -3,8 +3,12 @@ namespace DroneLogger.Classes;
 internal sealed class DownloadTimingEstimator
 {
     public TimeSpan? EstimatedTotal { get; private set; }
+    private TimeSpan? estimatedRemaining, lastEstimateElapsed;
 
-    public void Reset() => EstimatedTotal = null;
+    public void Reset()
+    {
+        EstimatedTotal = estimatedRemaining = lastEstimateElapsed = null;
+    }
 
     public (TimeSpan? Remaining, TimeSpan? Total) Estimate(
         TimeSpan elapsed, TimeSpan payloadElapsed, int receivedBytes, int totalBytes)
@@ -13,17 +17,26 @@ internal sealed class DownloadTimingEstimator
             receivedBytes <= 0 || totalBytes <= 0 || receivedBytes > totalBytes)
             return (null, null);
 
-        if (EstimatedTotal == null)
+        if (receivedBytes == totalBytes)
         {
-            // Measure several seconds of packets before fixing the estimate.
+            EstimatedTotal = elapsed;
+            estimatedRemaining = TimeSpan.Zero;
+            lastEstimateElapsed = elapsed;
+        }
+        else if (lastEstimateElapsed == null ||
+                 elapsed - lastEstimateElapsed.Value >= TimeSpan.FromSeconds(3))
+        {
+            // Average accepted payload throughput includes retries and stalls.
+            // Refresh both estimates together every three seconds.
             if (payloadElapsed < TimeSpan.FromSeconds(3)) return (null, null);
             double remainingTicks = payloadElapsed.Ticks * ((double)(totalBytes - receivedBytes) / receivedBytes);
             if (!double.IsFinite(remainingTicks) || remainingTicks >= TimeSpan.MaxValue.Ticks - elapsed.Ticks)
                 return (null, null);
-            EstimatedTotal = elapsed + TimeSpan.FromTicks((long)remainingTicks);
+            estimatedRemaining = TimeSpan.FromTicks((long)remainingTicks);
+            EstimatedTotal = elapsed + estimatedRemaining;
+            lastEstimateElapsed = elapsed;
         }
 
-        TimeSpan remaining = EstimatedTotal.Value - elapsed;
-        return (remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, EstimatedTotal);
+        return (estimatedRemaining, EstimatedTotal);
     }
 }

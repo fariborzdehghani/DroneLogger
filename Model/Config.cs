@@ -12,12 +12,15 @@ namespace DroneLogger.Model
         // Keep the legacy JSON name so existing droneconfig.json files load.
         [JsonPropertyName("Throttle")]
         public int ArmThrottle { get; set; }
+        // Historical configurations/logs only; new command packets always use 0.
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public int HoverThrottle { get; set; }
         public int MinThrottle { get; set; }
         public int MaxThrottle { get; set; }
         public int TakeoffAltitudeCm { get; set; } =
             Classes.ProtocolPacketBuilder.DefaultTakeoffAltitudeCm;
         public int MaxAngle { get; set; }
+        public bool Srf05FailsafeEnabled { get; set; } = true;
         public int TargetPitch { get; set; }
         public int TargetRoll { get; set; }
         public int TargetYaw { get; set; }

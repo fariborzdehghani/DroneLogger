@@ -17,6 +17,7 @@ namespace DroneLogger
         public SessionManager sessionManager;
         private bool shutdownInProgress;
         private bool shutdownComplete;
+        private bool throttleAdjustmentPending;
         private bool initialPanelWidthsSet;
         private GridLength expandedControlsWidth = new GridLength(1, GridUnitType.Star);
         private GridLength expandedGraphsWidth = new GridLength(1, GridUnitType.Star);
@@ -56,6 +57,7 @@ namespace DroneLogger
                     UpdateCommandControls();
                     if (!armed)
                     {
+                        FinishSerialFlightRecording(transmitter.IsConnected ? "Operator DISARM" : "Connection lost · recording interrupted");
                         lbl_HeartbeatWarning.Visibility = (chk_HeartbeatEnabled.IsChecked == false) ? Visibility.Visible : Visibility.Collapsed;
                     }
                     else
@@ -65,8 +67,12 @@ namespace DroneLogger
                 });
             };
 
-            logger.PortStateChanged += (_, _) =>
-                DispatchUiUpdate(UpdateCommandControls);
+            logger.PortStateChanged += (_, connected) =>
+                DispatchUiUpdate(() =>
+                {
+                    if (!connected) FinishSerialFlightRecording("Serial connection lost · recording interrupted");
+                    UpdateCommandControls();
+                });
 
             DataContext = this;
 
@@ -165,6 +171,7 @@ namespace DroneLogger
                 cameraTargetHeight: 0.3,
                 enableMouseWheelZoom: true,
                 enableMouseDragPan: true);
+            RestoreViewState();
         }
 
         private async void Window_Closing(object? sender, CancelEventArgs e)
@@ -181,6 +188,7 @@ namespace DroneLogger
             }
 
             shutdownInProgress = true;
+            SaveViewState();
             downloadCancellation?.Cancel();
             downloadTimingTimer.Stop();
             downloadClock.Stop();
@@ -198,6 +206,8 @@ namespace DroneLogger
             }
             finally
             {
+                FinishSerialFlightRecording("Application closed · recording ended");
+                await serialSaveTask;
                 try
                 {
                     logger.LogPortDisconnect();
@@ -310,11 +320,14 @@ namespace DroneLogger
             try
             {
                 PrepareLiveFlight();
+                takeoffStopRequested = false;
+                takeoffLandRequested = false;
                 await transmitter.ArmAsync();
                 Tools.Log(this, "ARM requested: motors will start at arm throttle");
             }
             catch (Exception ex)
             {
+                FinishSerialFlightRecording("ARM command failed · recording interrupted");
                 Tools.Log(this, $"ARM error: {ex.Message}");
             }
         }
@@ -324,6 +337,7 @@ namespace DroneLogger
             try
             {
                 takeoffStopRequested = true;
+                UpdateCommandControls();
                 downloadCancellation?.Cancel();
                 await transmitter.DisarmAsync();
                 Tools.Log(this, "DISARM requested");
@@ -337,6 +351,11 @@ namespace DroneLogger
         private async void btn_Takeoff_Click(object sender, RoutedEventArgs e)
         {
             await ToggleTakeoffAsync();
+        }
+
+        private async void btn_Land_Click(object sender, RoutedEventArgs e)
+        {
+            await RequestLandingAsync();
         }
 
         private void chk_Heartbeat_Checked(object sender, RoutedEventArgs e)
@@ -402,7 +421,7 @@ namespace DroneLogger
 
                 // Persist and start logging only after the packet was sent successfully.
                 ConfigurationManager.SaveConfiguration(config);
-                sessionManager.StartNewSession(config);
+                sentConfiguration = config;
 
                 Tools.Log(this, "Configuration saved and sent to device");
             }
@@ -414,27 +433,41 @@ namespace DroneLogger
 
         private async void btn_ThrottleIncrease_Click(object sender, RoutedEventArgs e)
         {
-            if (int.TryParse(txt_ArmThrottle.Text, out int throttle) &&
-                int.TryParse(txt_MaxThrottle.Text, out int maxThrottle))
-            {
-                throttle = Math.Min(throttle + 1, maxThrottle);
-                txt_ArmThrottle.Text = throttle.ToString();
-
-                // Update the config and send it to the device
-                await UpdateAndSendConfigAsync();
-            }
+            await RequestThrottleAdjustmentAsync(true);
         }
 
         private async void btn_ThrottleDecrease_Click(object sender, RoutedEventArgs e)
         {
-            if (int.TryParse(txt_ArmThrottle.Text, out int throttle) &&
-                int.TryParse(txt_MinThrottle.Text, out int minThrottle))
-            {
-                throttle = Math.Max(throttle - 1, minThrottle);
-                txt_ArmThrottle.Text = throttle.ToString();
+            await RequestThrottleAdjustmentAsync(false);
+        }
 
-                // Update the config and send it to the device
-                await UpdateAndSendConfigAsync();
+        internal async Task RequestThrottleAdjustmentAsync(bool increase)
+        {
+            if (shutdownInProgress || !transmitter.IsConnected ||
+                downloadCancellation != null || takeoffStartPending || throttleAdjustmentPending ||
+                (transmitter.IsArmed && (transmitter.IsLandingRequested || takeoffStopRequested))) return;
+            throttleAdjustmentPending = true;
+            UpdateCommandControls();
+            try
+            {
+                if (transmitter.IsArmed)
+                {
+                    await transmitter.AdjustThrottleAsync(increase);
+                    Tools.Log(this, increase ? "Manual throttle +1% requested" : "Manual throttle -1% requested");
+                }
+                else if (int.TryParse(txt_ArmThrottle.Text, out int throttle) &&
+                         int.TryParse(txt_MinThrottle.Text, out int minimum) &&
+                         int.TryParse(txt_MaxThrottle.Text, out int maximum) && minimum <= maximum)
+                {
+                    txt_ArmThrottle.Text = Math.Clamp(throttle + (increase ? 1 : -1), minimum, maximum).ToString();
+                    await UpdateAndSendConfigAsync();
+                }
+            }
+            catch (Exception ex) { Tools.Log(this, $"Throttle error: {ex.Message}"); }
+            finally
+            {
+                throttleAdjustmentPending = false;
+                UpdateCommandControls();
             }
         }
 
@@ -445,6 +478,7 @@ namespace DroneLogger
                 Config config = GetConfigFromUI();
                 byte[] data = transmitter.CreateConfigPacket(config);
                 await SendDataAsync(data);
+                sentConfiguration = config;
             }
             catch (Exception ex)
             {
@@ -457,13 +491,13 @@ namespace DroneLogger
             return new Config
             {
                 ArmThrottle = Tools.ParseInt(txt_ArmThrottle.Text, "Arm Throttle"),
-                HoverThrottle = Tools.ParseInt(txt_HoverThrottle.Text, "Hover Throttle"),
                 MinThrottle = Tools.ParseInt(txt_MinThrottle.Text, "Min Throttle"),
                 MaxThrottle = Tools.ParseInt(txt_MaxThrottle.Text, "Max Throttle"),
                 TakeoffAltitudeCm = Tools.ParseInt(
                     txt_TakeoffAltitude.Text,
                     "Takeoff Altitude"),
                 MaxAngle = Tools.ParseInt(txt_MaxAngle.Text, "Max Angle"),
+                Srf05FailsafeEnabled = chk_Srf05Failsafe.IsChecked != false,
                 TargetPitch = Tools.ParseInt(txt_TargetPitch.Text, "Target Pitch"),
                 TargetRoll = Tools.ParseInt(txt_TargetRoll.Text, "Target Roll"),
                 TargetYaw = Tools.ParseInt(txt_TargetYaw.Text, "Target Yaw"),
@@ -491,7 +525,6 @@ namespace DroneLogger
         private void LoadConfigToUI(Config config)
         {
             txt_ArmThrottle.Text = config.ArmThrottle.ToString();
-            txt_HoverThrottle.Text = config.HoverThrottle.ToString();
             txt_MinThrottle.Text = config.MinThrottle.ToString();
             txt_MaxThrottle.Text = config.MaxThrottle.ToString();
             txt_TakeoffAltitude.Text =
@@ -499,6 +532,7 @@ namespace DroneLogger
                     ? config.TakeoffAltitudeCm
                     : ProtocolPacketBuilder.DefaultTakeoffAltitudeCm).ToString();
             txt_MaxAngle.Text = config.MaxAngle.ToString();
+            chk_Srf05Failsafe.IsChecked = config.Srf05FailsafeEnabled;
             txt_TargetPitch.Text = config.TargetPitch.ToString();
             txt_TargetRoll.Text = config.TargetRoll.ToString();
             txt_TargetYaw.Text = config.TargetYaw.ToString();
@@ -548,14 +582,19 @@ namespace DroneLogger
             bool connected = transmitter.IsConnected;
             bool armed = transmitter.IsArmed;
             bool downloading = downloadCancellation != null;
-            btn_Arm.IsEnabled = connected && !downloading && !takeoffStartPending;
+            btn_Arm.IsEnabled = connected && !downloading && !takeoffStartPending && !throttleAdjustmentPending;
             btn_Takeoff.IsEnabled = connected && (armed || takeoffStartPending) && !downloading;
-            btn_Takeoff.Content = transmitter.IsTakeoffActive || takeoffStartPending ? "STOP (Space)" : "TAKE OFF (Space)";
+            btn_Takeoff.Content = transmitter.IsTakeoffActive || transmitter.IsManualThrottleActive ||
+                transmitter.IsLandingRequested || takeoffStartPending ||
+                (armed && throttleAdjustmentPending) ? "STOP (Space)" : "TAKE OFF (Space)";
+            btn_Land.IsEnabled = connected && (armed || takeoffStartPending) && !downloading;
             btn_Disarm.IsEnabled = connected;
             btn_SetConfig.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
-            btn_ThrottleIncrease.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
-            btn_ThrottleDecrease.IsEnabled = connected && !armed && !downloading && !takeoffStartPending;
+            btn_ThrottleIncrease.IsEnabled = connected && !downloading && !takeoffStartPending &&
+                !throttleAdjustmentPending && (!armed || (!transmitter.IsLandingRequested && !takeoffStopRequested));
+            btn_ThrottleDecrease.IsEnabled = btn_ThrottleIncrease.IsEnabled;
             chk_HeartbeatEnabled.IsEnabled = !armed;
+            chk_Srf05Failsafe.IsEnabled = !armed && !takeoffStartPending;
             btn_DownloadFlightLog.IsEnabled = connected && !armed && !takeoffStartPending;
             btn_DownloadFlightLog.Content = downloading ? "Cancel download" : "Download diagnostics";
             btn_PlayFlightLog.IsEnabled = recordedFlight != null && !armed && !downloading && !takeoffStartPending;
@@ -565,30 +604,6 @@ namespace DroneLogger
 
             cmb_ConnectionType.IsEnabled =
                 !transmitter.IsTransmitPortOpen() && !logger.IsLogPortOpen();
-        }
-
-        private void Window_KeyDown(object sender, KeyEventArgs e)
-        {
-            switch (e.Key)
-            {
-                case Key.Up:
-                    if (btn_ThrottleIncrease.IsEnabled)
-                    {
-                        btn_ThrottleIncrease.RaiseEvent(
-                            new RoutedEventArgs(Button.ClickEvent));
-                    }
-                    e.Handled = true;
-                    break;
-
-                case Key.Down:
-                    if (btn_ThrottleDecrease.IsEnabled)
-                    {
-                        btn_ThrottleDecrease.RaiseEvent(
-                            new RoutedEventArgs(Button.ClickEvent));
-                    }
-                    e.Handled = true;
-                    break;
-            }
         }
 
         private void btnPausePlots_Clicked(object sender, RoutedEventArgs e)

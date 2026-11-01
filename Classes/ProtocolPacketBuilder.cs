@@ -38,10 +38,26 @@ namespace DroneLogger.Classes
             return b;
         }
 
+        public static byte[] BuildLandPacket()
+        {
+            var b = new byte[PacketSize];
+            b[0] = 2; // Control
+            b[1] = 3; // LAND
+            return b;
+        }
+
         public static byte[] BuildHeartbeatPacket()
         {
             var b = new byte[PacketSize];
             b[0] = 3; // Heartbeat
+            return b;
+        }
+
+        public static byte[] BuildThrottleAdjustmentPacket(bool increase)
+        {
+            var b = new byte[PacketSize];
+            b[0] = 2; // Control
+            b[1] = increase ? (byte)4 : (byte)5; // Live throttle +/- 1 percentage point
             return b;
         }
 
@@ -54,12 +70,6 @@ namespace DroneLogger.Classes
             if (config.MaxThrottle < 0 || config.MaxThrottle > 100) throw new ArgumentOutOfRangeException(nameof(config.MaxThrottle));
             if (config.MaxThrottle < config.MinThrottle) throw new ArgumentOutOfRangeException("MaxThrottle must be >= MinThrottle");
             if (config.ArmThrottle < config.MinThrottle || config.ArmThrottle > config.MaxThrottle) throw new ArgumentOutOfRangeException(nameof(config.ArmThrottle));
-            if (config.HoverThrottle != 0 &&
-                (config.HoverThrottle < config.ArmThrottle ||
-                 config.HoverThrottle > config.MaxThrottle))
-            {
-                throw new ArgumentOutOfRangeException(nameof(config.HoverThrottle));
-            }
             if (config.TakeoffAltitudeCm < MinTakeoffAltitudeCm ||
                 config.TakeoffAltitudeCm > MaxTakeoffAltitudeCm)
             {
@@ -114,9 +124,10 @@ namespace DroneLogger.Classes
                     10,
                     ushort.MaxValue,
                     nameof(config.TakeoffThrottleRampPerSecond))); // 0.1 %/s
-            b[43] = ToByteChecked(config.HoverThrottle, nameof(config.HoverThrottle));
+            b[43] = 0; // Automatic hover learning; ignore saved legacy values.
+            b[46] = config.Srf05FailsafeEnabled ? (byte)0 : (byte)1;
 
-            // Removed settings leave bytes 35 and 40 zero; bytes 44-63 remain zero.
+            // 44/45 are recorder metadata only. 47-63 remain reserved and zero.
             return b;
         }
 

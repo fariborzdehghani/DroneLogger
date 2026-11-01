@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DroneLogger"
         xmlns:ScottPlot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
-        Title="Drone Control Center" Height="953" Width="1858" WindowStartupLocation="CenterScreen" Closing="Window_Closing" Loaded="Window_Loaded" WindowState="Maximized" KeyDown="Window_KeyDown" Icon="/DroneLogger;component/control.png"
+        Title="Drone Control Center" Height="953" Width="1858" WindowStartupLocation="CenterScreen" Closing="Window_Closing" Loaded="Window_Loaded" WindowState="Maximized" Icon="/DroneLogger;component/control.png"
         Background="#F3F6FA" FontFamily="Segoe UI">
     <Window.Resources>
         <Style x:Key="AppButtonStyle" TargetType="{x:Type Button}">
@@ -173,19 +173,30 @@
                           VerticalAlignment="Center"
                           Margin="18,0,4,0"/>
 
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox x:Name="chk_Srf05Failsafe"
+                          DockPanel.Dock="Right"
+                          Content="SRF05 automatic landing"
+                          IsChecked="True"
+                          Foreground="#E2E8F0"
+                          FontWeight="SemiBold"
+                          VerticalAlignment="Center"
+                          Margin="18,0,4,0"
+                          ToolTip="Enabled: land on missing/lost SRF05 altitude or takeoff timeout. Disabled: continue bounded throttle and attitude stabilization without altitude guarantees. Apply with Set Configuration while disarmed."/>
+
+                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="btn_SetConfig" Content="SET CONFIG" Click="btn_SetConfig_Click" Style="{StaticResource PrimaryButtonStyle}"/>
 
                     <Border Width="1" Height="26" Background="#475569" Margin="6,4,14,4"/>
 
                     <Button x:Name="btn_Arm" Content="ARM" Click="btn_Arm_Click" IsEnabled="False" ToolTip="Start all motors at the configured arm throttle" Style="{StaticResource ArmButtonStyle}"/>
-                    <Button x:Name="btn_Takeoff" Content="TAKE OFF (Space)" Click="btn_Takeoff_Click" IsEnabled="False" ToolTip="Space anywhere in this window starts takeoff; press again to DISARM. Held-key repeats are ignored." Style="{StaticResource ArmButtonStyle}"/>
+                    <Button x:Name="btn_Takeoff" Content="TAKE OFF (Space)" Click="btn_Takeoff_Click" IsEnabled="False" ToolTip="Space starts takeoff; press again for immediate DISARM. L while armed requests landing. Held-key repeats are ignored." Style="{StaticResource ArmButtonStyle}"/>
+                    <Button x:Name="btn_Land" Content="LAND (L)" Click="btn_Land_Click" IsEnabled="False" ToolTip="Start controlled landing with L. Space or DISARM still stops the motors immediately." Style="{StaticResource PrimaryButtonStyle}"/>
                     <Button x:Name="btn_Disarm" Content="DISARM" Click="btn_Disarm_Click" IsEnabled="False" Style="{StaticResource DisarmButtonStyle}"/>
 
                     <Border Width="1" Height="26" Background="#475569" Margin="6,4,14,4"/>
 
-                    <Button x:Name="btn_ThrottleDecrease" Content="ARM -" Click="btn_ThrottleDecrease_Click" ToolTip="Decrease arm throttle while disarmed (Down Arrow)" Style="{StaticResource ToolbarButtonStyle}"/>
-                    <Button x:Name="btn_ThrottleIncrease" Content="ARM +" Click="btn_ThrottleIncrease_Click" ToolTip="Increase arm throttle while disarmed (Up Arrow)" Style="{StaticResource ToolbarButtonStyle}"/>
+                    <Button x:Name="btn_ThrottleDecrease" Content="THROTTLE - (↓)" Click="btn_ThrottleDecrease_Click" ToolTip="Down Arrow: decrease by 1 percentage point. Armed/flying: take manual throttle control; automatic climb/altitude hold stops. Disarmed: change arm throttle. Held-key repeats are ignored." Style="{StaticResource ToolbarButtonStyle}"/>
+                    <Button x:Name="btn_ThrottleIncrease" Content="THROTTLE + (↑)" Click="btn_ThrottleIncrease_Click" ToolTip="Up Arrow: increase by 1 percentage point. Armed/flying: take manual throttle control; automatic climb/altitude hold stops. Disarmed: change arm throttle. Held-key repeats are ignored." Style="{StaticResource ToolbarButtonStyle}"/>
 
                     <TextBlock x:Name="lbl_HeartbeatWarning"
                                Text="Desktop heartbeat disabled — embedded failsafe still active"
@@ -194,7 +205,7 @@
                                VerticalAlignment="Center"
                                Visibility="Collapsed"
                                Margin="10,0,0,0"/>
-                </StackPanel>
+                </WrapPanel>
             </DockPanel>
         </Border>
 
@@ -337,15 +348,7 @@
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
                                                 <Label Padding="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,3,6,3" Content="Takeoff Ramp (%/s):" HorizontalContentAlignment="Right" />
-                                                <TextBox Grid.Column="1" VerticalAlignment="Center" Width="70" Margin="0,3,10,3" HorizontalAlignment="Left" x:Name="txt_TakeoffThrottleRamp" Text="10" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip="Initial liftoff throttle ramp: 1 to 30 percent per second. Liftoff must be confirmed within 10 seconds; very slow ramps may time out." />
-                                            </Grid>
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FieldLabels"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Label Padding="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,3,6,3" Content="Hover Throttle:" HorizontalContentAlignment="Right" />
-                                                <TextBox Grid.Column="1" VerticalAlignment="Center" Width="70" Margin="0,3,10,3" HorizontalAlignment="Left" x:Name="txt_HoverThrottle" Text="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip="Measured hover throttle. Use 0 to let firmware start with the midpoint between arm and maximum throttle." />
+                                                <TextBox Grid.Column="1" VerticalAlignment="Center" Width="70" Margin="0,3,10,3" HorizontalAlignment="Left" x:Name="txt_TakeoffThrottleRamp" Text="10" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip="Initial liftoff throttle ramp: 1 to 30 percent per second. With SRF05 failsafe enabled, liftoff must be confirmed within 10 seconds." />
                                             </Grid>
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
@@ -859,6 +862,7 @@
                                     <Button x:Name="btn_OpenFlightLog" Content="Open flight log" Click="btn_OpenFlightLog_Click" Margin="0,0,7,6"/>
                                     <Button x:Name="btn_ExportFlightCsv" Content="Export CSV" Click="btn_ExportFlightCsv_Click" IsEnabled="False" Margin="0,0,7,6"/>
                                     <Button Content="Logs folder" Click="btn_FlightLogFolder_Click" Margin="0,0,7,6"/>
+                                    <Button x:Name="btn_ResetFlightUI" Content="Reset UI" Click="btn_ResetFlightUI_Click" Margin="0,0,7,6" ToolTip="Clear the reviewed flight and displayed telemetry, then return to live view. Saved logs, configuration and connections are kept."/>
                                 </WrapPanel>
                             </DockPanel>
                             <TextBox x:Name="flightLogFilePath" Grid.Row="1" Text="—" IsReadOnly="True" BorderThickness="0" Background="Transparent" Foreground="#64748B" Padding="0" MinHeight="22" FontSize="12" ToolTip="Saved log file"/>
@@ -942,10 +946,13 @@
                                             <ComboBoxItem Content="Acceleration"/>
                                             <ComboBoxItem Content="Gyro bias"/>
                                             <ComboBoxItem Content="SRF05 freshness"/>
+                                            <ComboBoxItem Content="Raw SRF05 altitude"
+                                                ToolTip="All recorded echo distances, including rejected readings, before tilt compensation and filtering. Available in full precision logs with SRF05 echo details."/>
                                         </ComboBox>
                                     </DockPanel>
                                     <ScottPlot:WpfPlot x:Name="flightLogSignalPlot" Grid.Row="1"/>
-                                    <ScottPlot:WpfPlot x:Name="flightLogAltitudePlot" Grid.Row="3"/>
+                                    <ScottPlot:WpfPlot x:Name="flightLogAltitudePlot" Grid.Row="3"
+                                        ToolTip="Orange: raw SRF05 distance, including rejected echoes, before tilt compensation and filtering. Filtered altitude has gaps when invalid. Raw echoes require a log with SRF05 echo details."/>
                                 </Grid>
                                 <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="#CBD5E1" ResizeBehavior="PreviousAndNext"/>
                                 <Border Grid.Column="2" Style="{StaticResource FlightReviewCard}">

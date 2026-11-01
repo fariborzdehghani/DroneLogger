@@ -49,6 +49,10 @@ namespace DroneLogger.Classes
 
         private readonly List<double> altitudeX = new();
         private readonly List<double> altitudeValues = new();
+        private readonly List<double> rawAltitudeX = new();
+        private readonly List<double> rawAltitudeValues = new();
+        private uint? lastRawEchoMs;
+        private ScottPlot.Plottables.Scatter? rawAltitudePlotObj;
     private readonly List<double> vzX = new();
     private readonly List<double> vzValues = new();
 
@@ -178,7 +182,7 @@ namespace DroneLogger.Classes
 
             // Altitude plot
             altitudePlotObj = altitudePlot.Plot.Add.Scatter(altitudeX, altitudeValues);
-            altitudePlotObj.LegendText = "Altitude";
+            altitudePlotObj.LegendText = "Filtered altitude";
             altitudePlotObj.Color = ScottPlot.Colors.CornflowerBlue;
             altitudePlot.Plot.Legend.IsVisible = true;
             altitudePlot.Plot.Legend.Alignment = Alignment.UpperLeft;
@@ -213,6 +217,27 @@ namespace DroneLogger.Classes
             currentX = recordedConfiguration != null ? dataPoint.elapsed_ms / 1000.0 : dataPointIndex;
             UpdateRollData(dataPoint);
             UpdatePitchData(dataPoint);
+            if (recordedConfiguration != null &&
+                dataPoint.srf05_last_echo_ms != lastRawEchoMs &&
+                dataPoint.TryGetRawSrf05Echo(out double echoTime, out double rawCm))
+            {
+                lastRawEchoMs = dataPoint.srf05_last_echo_ms;
+                rawAltitudeX.Add(echoTime);
+                rawAltitudeValues.Add(rawCm);
+                if (rawAltitudeX.Count > pointLimit)
+                {
+                    rawAltitudeX.RemoveAt(0);
+                    rawAltitudeValues.RemoveAt(0);
+                }
+                if (rawAltitudePlotObj == null)
+                {
+                    rawAltitudePlotObj = altitudePlot.Plot.Add.Scatter(rawAltitudeX, rawAltitudeValues);
+                    rawAltitudePlotObj.LegendText = "Raw SRF05 (all echoes)";
+                    rawAltitudePlotObj.Color = ScottPlot.Colors.DarkOrange;
+                    rawAltitudePlotObj.MarkerSize = 3;
+                    rawAltitudePlotObj.LineWidth = 1;
+                }
+            }
 
             // Single refresh for all plots
             if (!batchLoading) RefreshPlots();
@@ -419,6 +444,8 @@ namespace DroneLogger.Classes
         public void Reset()
         {
             recordedConfiguration = null;
+            lastRawEchoMs = null;
+            rawAltitudePlotObj = null;
             pointLimit = MAX_POINTS;
             currentX = 0;
             dataPointIndex = 0;
@@ -469,6 +496,8 @@ namespace DroneLogger.Classes
             pitchTarget.Clear();
             altitudeX.Clear();
             altitudeValues.Clear();
+            rawAltitudeX.Clear();
+            rawAltitudeValues.Clear();
             vzX.Clear();
             vzValues.Clear();
             yawX.Clear();

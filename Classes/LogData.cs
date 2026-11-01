@@ -4,6 +4,7 @@ namespace DroneLogger.Classes
 {
     public class LogData
     {
+        internal LogData Snapshot() => (LogData)MemberwiseClone();
         public uint timestamp_ms { get; set; }
         public double elapsed_ms { get; set; }
         public byte state { get; set; }
@@ -44,11 +45,27 @@ namespace DroneLogger.Classes
         public byte? srf05_result { get; set; }
         public double? srf05_raw_distance_cm { get; set; }
         public byte? srf05_filter_result { get; set; }
+        public bool TryGetRawSrf05Echo(out double timeSeconds, out double distanceCm)
+        {
+            timeSeconds = distanceCm = double.NaN;
+            if (!srf05_trace_valid || srf05_last_echo_ms is not uint echoMs ||
+                srf05_raw_distance_cm is not double rawCm || !double.IsFinite(rawCm) || rawCm <= 0 ||
+                !double.IsFinite(elapsed_ms)) return false;
+
+            // Raw distance survives timeouts in the cache. Place it at its echo
+            // time, including boot-tick wrap, and omit echoes before the retained log.
+            uint ageMs = unchecked(timestamp_ms - echoMs);
+            if (ageMs > elapsed_ms) return false;
+            timeSeconds = (elapsed_ms - ageMs) / 1000.0;
+            distanceCm = rawCm; // All filter outcomes; no tilt compensation or smoothing.
+            return true;
+        }
+
         public string srf05_filter_status => srf05_filter_result switch
         {
             0 => "Invalid filter input", 1 => "Accepted", 2 => "Rejected due to tilt",
             3 => "Waiting for three echoes", 4 => "Duplicate or old timestamp",
-            5 => "Rejected by median motion gate", 6 => "Rejected by prediction innovation gate",
+            5 => "Rejected by echo motion gate", 6 => "Rejected by prediction innovation gate",
             7 => "Invalid filter state", _ => "Not recorded"
         };
         public string srf05_status => !srf05_trace_valid ? "Unavailable" : srf05_result switch

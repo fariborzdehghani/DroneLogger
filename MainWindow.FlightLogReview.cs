@@ -40,7 +40,8 @@ public partial class MainWindow
         flightLogMessages.ItemsSource = session.Messages;
         flightLogRecording.Text = $"{session.Samples[^1].elapsed_ms / 1000:F2} s";
         flightLogSampleCount.Text = $"Flight #{session.SessionId} · {session.Samples.Count} samples";
-        flightLogSampleCount.Text += session.IsCompact ? " · compact" : " · full";
+        flightLogSampleCount.Text += session.IsFullPrecisionSerial ? " · serial capture · full precision + sensor traces" :
+            session.IsSerialRecording ? " · serial capture" : session.IsCompact ? " · compact" : " · full";
         flightLogSampleCount.ToolTip = session.IsCompact
             ? "Compact PID log: yaw, yaw-rate PID and altitude PID channels are unavailable. The 3D view shows roll/pitch with a fixed heading."
             : session.CompactFallback ? "Full precision preserved because a sample exceeded the compact numeric range." : null;
@@ -48,10 +49,11 @@ public partial class MainWindow
         flightLogError.Text = $"Error {session.ErrorCode} · HAL {session.HalStatus}";
         flightLogStopReason.Foreground = session.StopReason is 1 or 4 ? Brushes.DarkSlateGray : Brushes.Firebrick;
         double[] loopTimes = session.Samples.Select(s => s.loop_dt_ms).Where(double.IsFinite).ToArray();
-        flightLogLoopTiming.Text = session.AverageLoopDtMs.HasValue
+        flightLogLoopTiming.Text = session.IsSerialRecording && !session.IsFullPrecisionSerial ? "Live serial samples" : session.AverageLoopDtMs.HasValue
             ? $"{session.AverageLoopDtMs.Value:F3} ms average"
             : "Average unavailable (older firmware)";
-        flightLogLoopTiming.ToolTip = $"Average of {session.LoopIterationCount:N0} main-loop iterations since startup, captured at download. " +
+        flightLogLoopTiming.ToolTip = $"Average of {session.LoopIterationCount:N0} main-loop iterations since startup, " +
+            (session.IsFullPrecisionSerial ? "captured in the last serial frame. " : "captured at download. ") +
             (loopTimes.Length == 0 ? "" : $"Retained sample peak: {loopTimes.Max():F2} ms.");
         flightLogRetention.Text = session.OverwrittenSamples == 0 ? "No samples overwritten" :
             $"{session.OverwrittenSamples} earlier samples overwritten";
@@ -71,24 +73,27 @@ public partial class MainWindow
         flightLogSettings.ItemsSource = new (string Setting, string Value)[]
         {
             ("Arm throttle", $"{c.ArmThrottle} %"),
-            ("Hover throttle (configured)", $"{c.HoverThrottle} %"),
-            ("Hover throttle (effective)", $"{session.EffectiveHoverThrottle:G} %"),
+            ("Hover control", session.AutomaticHoverThrottle ? "Automatic learning" : $"Legacy configuration ({c.HoverThrottle} %)"),
+            (session.AutomaticHoverThrottle ? "Hover throttle (last estimate)" : "Hover throttle (effective)", session.IsSerialRecording && !session.IsFullPrecisionSerial ? "Not included in live stream" : $"{session.EffectiveHoverThrottle:G} %"),
             ("Throttle limits", $"{c.MinThrottle} – {c.MaxThrottle} %"),
             ("Takeoff ramp", $"{c.TakeoffThrottleRampPerSecond:G} %/s"),
             ("Takeoff altitude", $"{c.TakeoffAltitudeCm} cm"),
+            ("SRF05 automatic landing", c.Srf05FailsafeEnabled ? "Enabled" : "Disabled"),
             ("Maximum flight angle", $"{c.MaxAngle} deg"),
             ("Target roll / pitch", $"{c.TargetRoll} / {c.TargetPitch} deg"),
             ("Target yaw", $"{c.TargetYaw} deg"),
             ("Target yaw rate", $"{c.TargetGz} deg/s"),
             ("PID integral limit", $"{c.PIDMaxIPart:G} %"),
             ("PID output limit", $"{c.PIDMaxOutput:G} %"),
-            ("Enabled sensors", string.Join(", ", sensors.Where((_, i) => (session.EnabledSensors & (1 << i)) != 0))),
-            ("Sample interval", $"{session.SampleIntervalMs} ms"),
+            ("Enabled sensors", session.IsSerialRecording && !session.IsFullPrecisionSerial ? "Not included in live stream" : string.Join(", ", sensors.Where((_, i) => (session.EnabledSensors & (1 << i)) != 0))),
+            ("Sample interval", session.IsFullPrecisionSerial ? $"{session.SampleIntervalMs} ms minimum; serial arrival times since ARM" :
+                session.IsSerialRecording ? "Serial arrival times since ARM" : $"{session.SampleIntervalMs} ms"),
             ("Configuration applied", session.ConfigurationApplied ? "Yes" : "No"),
             ("Average loop dt (since startup)", session.AverageLoopDtMs is double dt ? $"{dt:F3} ms" : "Unavailable"),
             ("Loop iterations", session.LoopIterationCount.ToString("N0")),
             ("Start / end boot ticks", $"{session.StartTickMs} / {session.EndTickMs} ms"),
-            ("Recording format", $"v{session.FormatVersion} · {session.RawBlob.Length:N0} bytes"),
+            ("Recording format", session.IsFullPrecisionSerial ? "Serial v7 full precision + sensor traces" :
+                session.IsSerialRecording ? "Serial telemetry captured by desktop" : $"v{session.FormatVersion} · {session.RawBlob.Length:N0} bytes"),
             ("IMU trace", session.HasImuTrace ? "Recorded in full-precision samples" : "Not included; use full precision on updated firmware"),
             ("SRF05 freshness", session.HasSrf05Trace ? "Echo timestamps and accepted-measurement age recorded" : "Not included; use full precision on updated firmware"),
             ("SRF05 echo details", session.HasSrf05Details ? "Raw distance and specific filter result recorded" : "Not included in this recording"),
@@ -97,7 +102,8 @@ public partial class MainWindow
             ("Accelerometer rejection", session.AccelRejectionEnabled is bool rejection ? (rejection ? "Enabled" : "Disabled") : "Unavailable"),
             ("IMU ranges", session.EstimatorSettingsRecorded ? $"Gyro +/-{session.GyroRangeDps} deg/s; accelerometer +/-{session.AccelRangeG} g" : "Unavailable"),
             ("Estimator source signature", session.EstimatorSourceId is uint sourceId && sourceId != 0 ? $"{sourceId:X8}" : "Unavailable"),
-            ("Download detail", session.IsCompact ? "Compact roll/pitch PID; yaw and altitude PID unavailable; 3D heading fixed" :
+            ("Download detail", session.IsFullPrecisionSerial ? "Full-precision live samples with IMU and SRF05 traces" :
+                session.IsSerialRecording ? "Legacy serial telemetry; update firmware for sensor traces" : session.IsCompact ? "Compact roll/pitch PID; yaw and altitude PID unavailable; 3D heading fixed" :
                 session.CompactFallback ? "Full precision (compact range exceeded)" : "Full precision"),
             ("Stop error", FlightLogSession.DescribeError(session.ErrorCode)),
             ("HAL status", session.HalStatus.ToString(CultureInfo.InvariantCulture))
@@ -121,6 +127,53 @@ public partial class MainWindow
         flightLogPlaybackSpeed.IsEnabled = canReplay;
         btn_ExportFlightCsv.IsEnabled = loaded;
         btn_CopyFlightRaw.IsEnabled = loaded;
+        btn_ResetFlightUI.IsEnabled = !transmitter.IsArmed &&
+            downloadCancellation == null && !takeoffStartPending;
+    }
+
+    private void ClearFlightLogReview()
+    {
+        updatingFlightLogSelection = true;
+        try
+        {
+            selectedFlightSample = -1;
+            flightLogTimeline.Value = 0;
+            flightLogTimeline.Maximum = 1;
+            flightLogPlaybackSpeed.SelectedIndex = 2;
+            flightLogSignal.SelectedIndex = flightLogPidAxis.SelectedIndex = 0;
+            flightLogSampleGroup.SelectedIndex = flightLogRawFormat.SelectedIndex = 0;
+            flightLogFaultsOnly.IsChecked = false;
+            FlightReviewTabs.SelectedIndex = 0;
+            flightLogSamples.ItemsSource = null;
+            flightLogSamples.Columns.Clear();
+            flightLogMessages.ItemsSource = null;
+            flightLogPidSettings.ItemsSource = flightLogSettings.ItemsSource = null;
+            flightLogRawData.Clear();
+            foreach (var text in new[] { flightLogRecording, flightLogSampleCount,
+                flightLogStopReason, flightLogError, flightLogLoopTiming, flightLogRetention,
+                flightLogValidity, flightLogLimits, flightLogSelectedState,
+                flightLogSelectedSample, flightLogSelectedValues, flightLogSelectedFlags })
+            {
+                text.Text = "—";
+                text.ToolTip = null;
+            }
+            flightLogStopReason.Foreground = Brushes.DarkSlateGray;
+            flightLogFilePath.Text = "—";
+            flightLogPlaybackTime.Text = "0.00 / 0.00 s";
+            flightLogPidGains.Text = "Open or download a flight log to inspect its controller response.";
+            flightLogPidSelected.Text = "No recorded sample selected";
+            flightLogPidRateStatus.Text = "";
+            signalTimeCursor = altitudeTimeCursor = null;
+            pidReviewTimeCursors.Clear();
+            foreach (var plot in new[] { flightLogSignalPlot, flightLogAltitudePlot }.Concat(PidReviewPlots))
+            {
+                plot.Plot.Clear();
+                plot.Plot.Axes.SetLimits(0, 1, -1, 1);
+                plot.Refresh();
+            }
+            recordedDrone3D?.Update(new LogData());
+        }
+        finally { updatingFlightLogSelection = false; }
     }
 
     private void ConfigureReviewPlot(WpfPlot view, string title, string units)
@@ -132,7 +185,8 @@ public partial class MainWindow
         view.Refresh();
     }
 
-    private void AddReviewSeries(WpfPlot view, string label, Func<LogData, double> value)
+    private void AddReviewSeries(WpfPlot view, string label, Func<LogData, double> value,
+        ScottPlot.Color? color = null)
     {
         if (recordedFlight == null) return;
         double[] x = recordedFlight.Samples.Select(s => s.elapsed_ms / 1000).ToArray();
@@ -141,6 +195,29 @@ public partial class MainWindow
         var series = view.Plot.Add.Scatter(x, y);
         series.LegendText = label;
         series.MarkerSize = 0;
+        if (color.HasValue) series.Color = color.Value;
+    }
+
+    private void AddRawSrf05Series(WpfPlot view)
+    {
+        if (recordedFlight == null) return;
+        var x = new List<double>();
+        var y = new List<double>();
+        uint? lastEchoMs = null;
+        foreach (var sample in recordedFlight.Samples)
+        {
+            if (sample.srf05_last_echo_ms == lastEchoMs ||
+                !sample.TryGetRawSrf05Echo(out double echoTime, out double rawCm)) continue;
+            lastEchoMs = sample.srf05_last_echo_ms;
+            x.Add(echoTime);
+            y.Add(rawCm);
+        }
+        if (x.Count == 0) return;
+        var series = view.Plot.Add.Scatter(x.ToArray(), y.ToArray());
+        series.LegendText = "Raw SRF05 (all echoes)";
+        series.Color = ScottPlot.Colors.DarkOrange;
+        series.MarkerSize = 3;
+        series.LineWidth = 1;
     }
 
     private void DrawFlightReviewPlots()
@@ -229,11 +306,20 @@ public partial class MainWindow
                 AddReviewSeries(plot, "Time since accepted SRF05 measurement",
                     s => s.srf05_age_ms is uint age ? age : double.NaN);
                 break;
+            case 14:
+                units = "cm";
+                AddRawSrf05Series(plot);
+                break;
         }
-        ConfigureReviewPlot(plot, ((ComboBoxItem)flightLogSignal.SelectedItem).Content.ToString()!, units);
+        string title = ((ComboBoxItem)flightLogSignal.SelectedItem).Content.ToString()!;
+        if (flightLogSignal.SelectedIndex == 14 && !recordedFlight.HasSrf05Details)
+            title += " · not recorded in this log";
+        ConfigureReviewPlot(plot, title, units);
         flightLogAltitudePlot.Plot.Clear();
-        AddReviewSeries(flightLogAltitudePlot, "Altitude", s => s.altitude_valid ? s.altitude : double.NaN);
-        AddReviewSeries(flightLogAltitudePlot, "Target", s => s.altitude_target);
+        AddRawSrf05Series(flightLogAltitudePlot);
+        AddReviewSeries(flightLogAltitudePlot, "Filtered altitude", s => s.altitude_valid ? s.altitude : double.NaN,
+            ScottPlot.Colors.CornflowerBlue);
+        AddReviewSeries(flightLogAltitudePlot, "Target", s => s.altitude_target, ScottPlot.Colors.Green);
         signalTimeCursor = plot.Plot.Add.VerticalLine(0);
         altitudeTimeCursor = flightLogAltitudePlot.Plot.Add.VerticalLine(0);
         signalTimeCursor.Color = altitudeTimeCursor.Color = ScottPlot.Colors.Gray;
@@ -320,6 +406,7 @@ public partial class MainWindow
             recordedDrone3D = new Drone3DView();
             recordedDrone3D.Initialize(FlightLogDroneContainer, showFrame: false, initialCameraDistance: 1.5,
                 cameraTargetHeight: 0.3, enableMouseWheelZoom: true, enableMouseDragPan: true);
+            recordedDrone3D.RestoreCameraState(viewState.Cameras?.GetValueOrDefault("review"));
             if (recordedFlight != null && selectedFlightSample >= 0)
                 InspectFlightSample(selectedFlightSample, flightLogTimeline.Value);
         }
@@ -387,6 +474,11 @@ public partial class MainWindow
         if (recordedFlight == null) return;
         if (flightLogRawFormat.SelectedIndex == 1)
         {
+            if (recordedFlight.IsSerialRecording)
+            {
+                flightLogRawData.Text = "Serial recordings store telemetry as JSON. Select JSON or CSV to inspect these samples.";
+                return;
+            }
             var text = new StringBuilder();
             for (int i = 0; i < recordedFlight.RawBlob.Length; i += 16)
             {

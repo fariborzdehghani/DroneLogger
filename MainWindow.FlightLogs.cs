@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 
@@ -19,6 +20,7 @@ public partial class MainWindow
     private int playbackIndex;
     private double playbackOffsetMs, playbackSpeed = 1;
     private bool playbackStarted, takeoffStartPending, takeoffStopRequested;
+    private bool takeoffLandRequested;
     private readonly DispatcherTimer downloadTimingTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly Stopwatch downloadClock = new();
     private readonly DownloadTimingEstimator downloadTimingEstimator = new();
@@ -33,7 +35,7 @@ public partial class MainWindow
         playbackTimer.Tick += PlaybackTimer_Tick;
         downloadTimingTimer.Tick += (_, _) => UpdateDownloadTiming();
         InitializeFlightLogReview();
-        // Preview handles Space even when a textbox, combo or button has focus.
+        // Flight shortcuts work even when a textbox, combo or button has focus.
         AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(FlightShortcut_KeyDown), true);
         AddHandler(Keyboard.PreviewKeyUpEvent, new KeyEventHandler(FlightShortcut_KeyUp), true);
         AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(TextBox_KeyboardFocus), true);
@@ -41,14 +43,26 @@ public partial class MainWindow
 
     private async void FlightShortcut_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Space) return;
+        if (e.Key == Key.Up || e.Key == Key.Down)
+        {
+            if (Keyboard.Modifiers != ModifierKeys.None ||
+                (!transmitter.IsArmed && Keyboard.FocusedElement is TextBoxBase or ComboBox or Slider)) return;
+            e.Handled = true;
+            if (!e.IsRepeat) await RequestThrottleAdjustmentAsync(e.Key == Key.Up);
+            return;
+        }
+        if (e.Key != Key.Space &&
+            !(e.Key == Key.L && (transmitter.IsArmed || takeoffStartPending))) return;
         e.Handled = true;
-        if (!e.IsRepeat && !shutdownInProgress) await ToggleTakeoffAsync();
+        if (e.IsRepeat || shutdownInProgress) return;
+        if (e.Key == Key.L) await RequestLandingAsync();
+        else await ToggleTakeoffAsync();
     }
 
     private void FlightShortcut_KeyUp(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Space) e.Handled = true;
+        if (e.Key == Key.Space ||
+            (e.Key == Key.L && (transmitter.IsArmed || takeoffStartPending))) e.Handled = true;
     }
 
     private void TextBox_KeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
@@ -59,9 +73,12 @@ public partial class MainWindow
 
     internal async Task ToggleTakeoffAsync()
     {
-        if (transmitter.IsTakeoffActive || takeoffStartPending)
+        if (transmitter.IsTakeoffActive || transmitter.IsManualThrottleActive ||
+            transmitter.IsLandingRequested || takeoffStartPending ||
+            (throttleAdjustmentPending && transmitter.IsArmed))
         {
             takeoffStopRequested = true;
+            takeoffLandRequested = false;
             try
             {
                 await transmitter.DisarmAsync();
@@ -76,9 +93,10 @@ public partial class MainWindow
             Tools.Log(this, "Finish or cancel the log download before takeoff.");
             return;
         }
-        if (!transmitter.IsConnected) return;
+        if (!transmitter.IsConnected || throttleAdjustmentPending) return;
         takeoffStartPending = true;
         takeoffStopRequested = false;
+        takeoffLandRequested = false;
         try
         {
             PrepareLiveFlight();
@@ -87,15 +105,42 @@ public partial class MainWindow
             if (!transmitter.IsArmed) await transmitter.ArmAsync();
             if (takeoffStopRequested) return;
             await transmitter.TakeoffAsync();
-            if (takeoffStopRequested) await transmitter.DisarmAsync();
-            else Tools.Log(this, "TAKEOFF requested. Press Space again to DISARM.");
+            if (takeoffStopRequested)
+            {
+                if (takeoffLandRequested) await transmitter.LandAsync();
+                else await transmitter.DisarmAsync();
+            }
+            else Tools.Log(this, "TAKEOFF requested. L: LAND. Space: immediate DISARM.");
         }
-        catch (Exception ex) { Tools.Log(this, $"Takeoff/stop error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            if (!transmitter.IsArmed) FinishSerialFlightRecording("ARM command failed · recording interrupted");
+            Tools.Log(this, $"Takeoff/stop error: {ex.Message}");
+        }
         finally
         {
             takeoffStartPending = false;
             UpdateCommandControls();
         }
+    }
+
+    internal async Task RequestLandingAsync()
+    {
+        if (shutdownInProgress || !transmitter.IsConnected ||
+            (!transmitter.IsArmed && !takeoffStartPending)) return;
+        // Cancel a pending start too; it must never send TAKEOFF after LAND.
+        // Space can still override this request with immediate DISARM.
+        takeoffLandRequested = true;
+        takeoffStopRequested = true;
+        UpdateCommandControls();
+        try
+        {
+            await transmitter.LandAsync();
+            Tools.Log(this, "L: LAND requested. Space stops immediately. " +
+                "After motors stop, DISARM to clear the desktop flight state.");
+        }
+        catch (Exception ex) { Tools.Log(this, $"Landing error: {ex.Message}"); }
+        UpdateCommandControls();
     }
 
     private void PrepareLiveFlight()
@@ -105,6 +150,36 @@ public partial class MainWindow
         logger.GetPidPlotter().Reset();
         btnPausePlots.IsChecked = false;
         btnPausePlots.Content = "Pause";
+    }
+
+    private void btn_ResetFlightUI_Click(object sender, RoutedEventArgs e) => ResetFlightReview();
+
+    internal void ResetFlightReview()
+    {
+        if (transmitter.IsArmed || takeoffStartPending || downloadCancellation != null) return;
+        StopPlayback();
+        recordedFlight = null;
+        playbackIndex = 0;
+        playbackSpeed = 1;
+        downloadTimingTimer.Stop();
+        downloadClock.Reset();
+        downloadTimingEstimator.Reset();
+        downloadSucceeded = false;
+        receivedDownloadBytes = totalDownloadBytes = 0;
+        payloadStartedAt = TimeSpan.Zero;
+        flightLogProgress.Value = 0;
+        flightLogDownloadTiming.Text = "";
+        flightLogDownloadTiming.Visibility = Visibility.Collapsed;
+        ClearFlightLogReview();
+        PrepareLiveFlight();
+        logger.DisplayTelemetry(new LogData { altitude_valid = false }, updatePlots: false);
+        lbl_Roll.Content = lbl_Pitch.Content = lbl_Yaw.Content = "—";
+        lbl_Canvas_Roll.Text = lbl_Canvas_Pitch.Text = lbl_Canvas_Yaw.Text = "—";
+        lbl_YawNumeric.Text = "—";
+        lbl_FlightLogStatus.Text = "Live view · no log loaded";
+        lbl_FlightLogStatus.ToolTip = null;
+        UpdateCommandControls();
+        MainTab.IsSelected = true;
     }
 
     private async void btn_DownloadFlightLog_Click(object sender, RoutedEventArgs e)
@@ -237,6 +312,7 @@ public partial class MainWindow
 
     internal void ShowRecordedFlight(FlightLogSession session)
     {
+        if (session.Samples.Count == 0) throw new InvalidDataException("This session contains no telemetry samples.");
         StopPlayback();
         recordedFlight = session;
         selectedFlightSample = -1;

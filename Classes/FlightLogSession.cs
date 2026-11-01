@@ -12,6 +12,10 @@ public sealed class FlightLogSession
     private static readonly double[] CompactScales = [100, 100, 100, 100, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
         100, 100, 100, 100, 100, 10, 10, 1000, 100];
     public int FormatVersion { get; init; } = 1;
+    public bool IsSerialRecording { get; init; }
+    public bool IsFullPrecisionSerial => IsSerialRecording && FormatVersion >= 7;
+    public string? RecordingEnd { get; init; }
+    public DateTime? RecordedAt { get; init; }
     public bool IsCompact => FormatVersion == 4;
     public bool HasImuTrace => FormatVersion >= 5;
     public bool HasSrf05Trace => FormatVersion >= 6;
@@ -36,21 +40,24 @@ public sealed class FlightLogSession
     public uint LoopIterationCount { get; init; }
     public bool ConfigurationApplied { get; init; } = true;
     public List<FlightLogMessage> Messages { get; init; } = [];
-    public string StopDescription => StopReason switch
+    public string StopDescription => RecordingEnd ?? (StopReason switch
     {
         1 => "Operator DISARM",
         2 => "Control link timeout",
         3 => "Firmware fault: " + DescribeError(ErrorCode),
         4 => "Disarmed diagnostic snapshot",
         _ => "Unknown stop reason"
-    };
+    });
     public Config Configuration { get; init; } = new();
     public double EffectiveHoverThrottle { get; init; }
+    public bool AutomaticHoverThrottle { get; init; }
     public byte EnabledSensors { get; init; } // bit 0 MPU6050, 1 QMC5883, 2 SRF05, 3 BMP280
     public List<LogData> Samples { get; init; } = [];
     [JsonIgnore]
     public byte[] RawBlob { get; init; } = [];
-    public string TimestampMeaning => "Milliseconds since MCU boot; elapsed_ms is relative to the first retained sample.";
+    public string TimestampMeaning => IsSerialRecording
+        ? "elapsed_ms is desktop capture time since ARM; timestamp_ms is MCU boot time when provided, otherwise desktop capture time."
+        : "Milliseconds since MCU boot; elapsed_ms is relative to the first retained sample.";
     public string Units => "Angles and IMU corrections: deg; gyro rates and IMU bias: deg/s; acceleration: g; IMU/loop dt and SRF05 age: ms; IMU/SRF05 timestamps: ms since boot; Vz: m/s; altitude/target: cm; motor outputs and PID contributions: percent.";
 
     public static string DescribeError(ushort code) => code switch
@@ -65,7 +72,7 @@ public sealed class FlightLogSession
         _ => $"Application error {code}"
     };
 
-    internal static FlightLogSession Decode(byte[] blob)
+    internal static FlightLogSession Decode(byte[] blob, bool liveSample = false)
     {
         if (blob.Length < 128 || blob.Length > FlightLogProtocol.MaxBlobSize ||
             !blob.AsSpan(0, 4).SequenceEqual("FLOG"u8) || U16(blob, 4) is < 1 or > 7 ||
@@ -82,7 +89,9 @@ public sealed class FlightLogSession
             (version >= 2 && U16(blob, 50) != FlightLogProtocol.EventSize) ||
             count < 1 || count > capacity || U16(blob, 14) != recordSize ||
             blob.Length != 128 + count * recordSize + messageCount * FlightLogProtocol.EventSize ||
-            U16(blob, 16) != (version >= 3 ? 10 : 50) || blob[18] < 1 || blob[18] > (version >= 2 ? 4 : 3))
+            U16(blob, 16) != (liveSample ? LiveSerialProtocol.IntervalMs : version >= 3 ? 10 : 50) ||
+            blob[18] < 1 || blob[18] > (version >= 2 ? 4 : 3) ||
+            (liveSample && (version != 7 || count != 1 || messageCount != 0 || blob[18] != 4)))
             throw new InvalidDataException("Flight-log length or sample count is invalid.");
 
         bool estimatorSettings = version >= 4 && blob[52] == 1;
@@ -115,6 +124,7 @@ public sealed class FlightLogSession
             OverwrittenSamples = U32(blob, 32), SampleIntervalMs = U16(blob, 16),
             StopReason = blob[18], ErrorCode = U16(blob, 20), HalStatus = blob[19],
             EffectiveHoverThrottle = config[44] / 2.0,
+            AutomaticHoverThrottle = (U16(blob, 6) & 8) != 0,
             EnabledSensors = config[45],
             Configuration = DecodeConfiguration(config)
         };
@@ -239,7 +249,8 @@ public sealed class FlightLogSession
         GzKp = p[25] / 100.0, GzKi = U16(p, 26) / 1000.0, GzKd = U16(p, 28) / 10000.0,
         AltitudeKp = p[30] / 100.0, AltitudeKi = U16(p, 31) / 1000.0, AltitudeKd = U16(p, 33) / 10000.0,
         PIDMaxIPart = U16(p, 36) / 10.0, PIDMaxOutput = U16(p, 38) / 10.0,
-        TakeoffThrottleRampPerSecond = U16(p, 41) / 10.0, HoverThrottle = p[43]
+        TakeoffThrottleRampPerSecond = U16(p, 41) / 10.0, HoverThrottle = p[43],
+        Srf05FailsafeEnabled = (p[46] & 1) == 0
     };
 
     internal static ushort U16(byte[] b, int i) => BinaryPrimitives.ReadUInt16LittleEndian(b.AsSpan(i));

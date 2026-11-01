@@ -18,6 +18,7 @@ namespace DroneLogger
         private Point3D _cameraTarget;
         private Point _lastDragPosition;
         private bool _isDragging;
+        private bool _orbitDragging;
         private const double MinCameraDistance = 0.35;
         private const double MaxCameraDistance = 8.0;
         private const double ModelHeadingCorrectionDegrees = 90.0;
@@ -42,8 +43,8 @@ namespace DroneLogger
             bool showFrame = true,
             double initialCameraDistance = 3.0,
             double cameraTargetHeight = 0.0,
-            bool enableMouseWheelZoom = false,
-            bool enableMouseDragPan = false)
+            bool enableMouseWheelZoom = true,
+            bool enableMouseDragPan = true)
         {
             if (container == null) return;
 
@@ -124,6 +125,7 @@ namespace DroneLogger
 
             // Put viewport into border and add to container
             _border.Child = _viewport;
+            _border.ToolTip = "Left drag: pan · Right drag: orbit · Mouse wheel: zoom";
             if (enableMouseWheelZoom)
             {
                 _border.PreviewMouseWheel += Border_PreviewMouseWheel;
@@ -132,8 +134,10 @@ namespace DroneLogger
             {
                 _border.Cursor = Cursors.SizeAll;
                 _border.PreviewMouseLeftButtonDown += Border_PreviewMouseLeftButtonDown;
+                _border.PreviewMouseRightButtonDown += Border_PreviewMouseLeftButtonDown;
                 _border.PreviewMouseMove += Border_PreviewMouseMove;
                 _border.PreviewMouseLeftButtonUp += Border_PreviewMouseLeftButtonUp;
+                _border.PreviewMouseRightButtonUp += Border_PreviewMouseLeftButtonUp;
                 _border.LostMouseCapture += Border_LostMouseCapture;
             }
             container.Children.Add(_border);
@@ -157,11 +161,12 @@ namespace DroneLogger
             object sender,
             MouseButtonEventArgs e)
         {
-            if (e.ChangedButton != MouseButton.Left)
+            if (e.ChangedButton != MouseButton.Left && e.ChangedButton != MouseButton.Right)
             {
                 return;
             }
 
+            _orbitDragging = e.ChangedButton == MouseButton.Right;
             _isDragging = true;
             _lastDragPosition = e.GetPosition(_border);
             _border.CaptureMouse();
@@ -170,7 +175,7 @@ namespace DroneLogger
 
         private void Border_PreviewMouseMove(object sender, MouseEventArgs e)
         {
-            if (!_isDragging || e.LeftButton != MouseButtonState.Pressed)
+            if (!_isDragging || (_orbitDragging ? e.RightButton : e.LeftButton) != MouseButtonState.Pressed)
             {
                 return;
             }
@@ -181,6 +186,13 @@ namespace DroneLogger
 
             if (drag.LengthSquared < double.Epsilon)
             {
+                return;
+            }
+
+            if (_orbitDragging)
+            {
+                SetCameraView(_azimuthDeg - drag.X * 0.4, _elevationDeg + drag.Y * 0.4, _distance);
+                e.Handled = true;
                 return;
             }
 
@@ -213,7 +225,7 @@ namespace DroneLogger
             object sender,
             MouseButtonEventArgs e)
         {
-            if (e.ChangedButton == MouseButton.Left)
+            if (e.ChangedButton == MouseButton.Left || e.ChangedButton == MouseButton.Right)
             {
                 EndMouseDrag();
                 e.Handled = true;
@@ -304,6 +316,13 @@ namespace DroneLogger
         public void SetCameraView(double azimuthDegrees, double elevationDegrees, double distance)
         {
             if (_camera == null) return;
+            if (!double.IsFinite(azimuthDegrees) || !double.IsFinite(elevationDegrees) || !double.IsFinite(distance)) return;
+            _azimuthDeg = azimuthDegrees % 360;
+            _elevationDeg = Math.Clamp(elevationDegrees, -85, 85);
+            _distance = Math.Clamp(distance, MinCameraDistance, MaxCameraDistance);
+            azimuthDegrees = _azimuthDeg;
+            elevationDegrees = _elevationDeg;
+            distance = _distance;
 
             // Convert degrees to radians
             double az = azimuthDegrees * Math.PI / 180.0;
@@ -318,6 +337,19 @@ namespace DroneLogger
             // without changing the viewing angle or zoom distance.
             _camera.Position = _cameraTarget + new Vector3D(x, y, z);
             _camera.LookDirection = new Vector3D(-x, -y, -z);
+        }
+
+        public CameraViewState GetCameraState() => new()
+        {
+            Azimuth = _azimuthDeg, Elevation = _elevationDeg, Distance = _distance,
+            TargetX = _cameraTarget.X, TargetY = _cameraTarget.Y, TargetZ = _cameraTarget.Z
+        };
+
+        public void RestoreCameraState(CameraViewState? state)
+        {
+            if (state?.IsValid != true) return;
+            _cameraTarget = new Point3D(state.TargetX, state.TargetY, state.TargetZ);
+            SetCameraView(state.Azimuth, state.Elevation, state.Distance);
         }
 
         /// <summary>

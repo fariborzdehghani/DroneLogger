@@ -225,13 +225,21 @@ namespace DroneLogger.Classes
                 return;
             }
 
+            long receivedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             context.Dispatcher.BeginInvoke(() =>
             {
                 try
                 {
                     string jsonData;
 
-                    if (TryExtractMessagePayload(line, "Data", out jsonData))
+                    if (line.StartsWith(LiveSerialProtocol.Marker, StringComparison.Ordinal))
+                    {
+                        FlightLogSession snapshot = LiveSerialProtocol.DecodeLine(line);
+                        LogData sample = snapshot.Samples[0];
+                        context.RecordSerialTelemetry(sample, true, receivedAt, snapshot);
+                        if (ShowLiveTelemetry) DisplayTelemetry(sample);
+                    }
+                    else if (TryExtractMessagePayload(line, "Data", out jsonData))
                     {
                         var logData = JsonSerializer.Deserialize<LogData>(jsonData);
                         if (logData == null)
@@ -240,6 +248,13 @@ namespace DroneLogger.Classes
                             return;
                         }
 
+                        using (var document = JsonDocument.Parse(jsonData))
+                        {
+                            bool hasTimestamp = document.RootElement.TryGetProperty("timestamp_ms", out _);
+                            // Older firmware omitted validity; do not present cached height as measured.
+                            if (!document.RootElement.TryGetProperty("altitude_valid", out _)) logData.altitude_valid = false;
+                            context.RecordSerialTelemetry(logData, hasTimestamp, receivedAt);
+                        }
                         if (ShowLiveTelemetry)
                         {
                             DisplayTelemetry(logData);
@@ -252,6 +267,7 @@ namespace DroneLogger.Classes
                         var errorData = JsonSerializer.Deserialize<Error>(jsonData);
                         if (errorData != null)
                         {
+                            context.RecordSerialMessage((ushort)errorData.Code, true, errorData.Content, receivedAt);
                             Tools.Log(context, $"Error received: Code={errorData.Code}, Message={errorData.Content}");
                         }
                     }
@@ -261,10 +277,16 @@ namespace DroneLogger.Classes
                         var infoData = JsonSerializer.Deserialize<Information>(jsonData);
                         if (infoData != null)
                         {
+                            context.RecordSerialMessage((ushort)infoData.Code, false, infoData.Content, receivedAt);
                             Tools.Log(context, $"Information received: Code={infoData.Code}, Message={infoData.Content}");
                         }
                     }
 
+                }
+                catch (InvalidDataException ex)
+                {
+                    context.RecordSerialMessage(0, true, $"Serial sample discarded: {ex.Message}", receivedAt);
+                    Tools.Log(context, $"Serial telemetry: {ex.Message}");
                 }
                 catch (JsonException jsonEx)
                 {
@@ -346,7 +368,8 @@ namespace DroneLogger.Classes
                         double.IsFinite(logData.altitude))
                     {
                         var attitude = new LogData { roll = logData.roll, pitch = logData.pitch,
-                            yaw = double.IsFinite(logData.yaw) ? logData.yaw : 0, altitude = logData.altitude };
+                            yaw = double.IsFinite(logData.yaw) ? logData.yaw : 0,
+                            altitude = logData.altitude_valid ? logData.altitude : 0 };
                         context.Drone3D?.Update(attitude);
                         context.CompactDrone3D?.Update(attitude);
                     }

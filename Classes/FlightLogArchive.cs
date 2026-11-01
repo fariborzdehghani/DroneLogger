@@ -9,6 +9,22 @@ namespace DroneLogger.Classes;
 
 internal static class FlightLogArchive
 {
+    public static string SaveSerial(FlightLogSession session, string? rootFolder = null)
+    {
+        if (!session.IsSerialRecording) throw new ArgumentException("Expected a serial recording.", nameof(session));
+        string folder = Path.Combine(rootFolder ?? RootFolder, $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_serial_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(session, SerialFlightRecorder.JsonOptions);
+        byte[] file = new byte[8 + json.Length];
+        "SFL1"u8.CopyTo(file);
+        BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(4), FlightLogProtocol.Crc32(json));
+        json.CopyTo(file, 8);
+        string path = Path.Combine(folder, "flight.flightlog");
+        File.WriteAllBytes(path + ".tmp", file);
+        File.Move(path + ".tmp", path);
+        return path;
+    }
+
     public static string RootFolder => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "DroneLogger", "FlightLogs");
 
@@ -47,6 +63,30 @@ internal static class FlightLogArchive
     public static FlightLogSession Load(string path)
     {
         var length = new FileInfo(path).Length;
+        using (var stream = File.OpenRead(path))
+        {
+            Span<byte> header = stackalloc byte[8];
+            if (stream.Read(header) == 8 && header[..4].SequenceEqual("SFL1"u8))
+            {
+                if (length < 10 || length > 256 * 1024 * 1024)
+                    throw new InvalidDataException("Serial flight-log size is invalid.");
+                byte[] json = new byte[(int)length - 8];
+                stream.ReadExactly(json);
+                if (BinaryPrimitives.ReadUInt32LittleEndian(header[4..]) != FlightLogProtocol.Crc32(json))
+                    throw new InvalidDataException("Serial flight log is damaged.");
+                var session = JsonSerializer.Deserialize<FlightLogSession>(json, SerialFlightRecorder.JsonOptions);
+                if (session?.IsSerialRecording != true || session.Samples == null || session.Messages == null || session.Configuration == null)
+                    throw new InvalidDataException("Invalid serial recording.");
+                double previous = 0;
+                foreach (var sample in session.Samples)
+                {
+                    if (sample == null || !double.IsFinite(sample.elapsed_ms) || sample.elapsed_ms < previous || sample.state > 5)
+                        throw new InvalidDataException("Invalid serial recording samples.");
+                    previous = sample.elapsed_ms;
+                }
+                return session;
+            }
+        }
         if (length < 136 || length > 8 + FlightLogProtocol.MaxBlobSize)
             throw new InvalidDataException("Flight-log file size is invalid.");
         byte[] file = File.ReadAllBytes(path);

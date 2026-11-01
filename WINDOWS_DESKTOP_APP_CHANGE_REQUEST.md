@@ -101,7 +101,7 @@ All 16-bit values are little-endian: low byte first, then high byte. Target valu
 | 38-39 | Maximum PID output | `round(value * 10)`, UInt16 LE |
 | 40 | Reserved | Zero |
 | 41-42 | Takeoff throttle ramp | `%/s` encoded as `round(value * 10)`, UInt16 LE |
-| 43 | Hover throttle | Unsigned byte; zero asks firmware to use the midpoint between arm and maximum throttle |
+| 43 | Legacy hover throttle | New desktop always sends zero; firmware learns automatically and ignores bounded legacy values |
 | 44-63 | Reserved | Zero |
 
 Validate values before conversion. Do not silently wrap an out-of-range number during a cast.
@@ -111,7 +111,7 @@ At minimum, enforce the firmware's current safety constraints:
 - minimum throttle: 0-100;
 - maximum throttle: 0-100 and greater than or equal to minimum throttle;
 - arm throttle: between minimum and maximum throttle;
-- hover throttle: zero for automatic estimation, otherwise between arm and maximum throttle;
+- hover throttle: no manual entry; always send zero, ignoring saved legacy values;
 - takeoff altitude: 20-300 cm;
 - maximum angle: 1-90;
 - takeoff throttle ramp: 1.0-30.0 %/s;
@@ -124,13 +124,13 @@ Throttle workflow:
 
 - `DISARMED`: motor output is zero.
 - `ARMED`: all four motors run equally at the configured arm throttle.
-- `TAKEOFF`: firmware ramps from arm throttle with a motor-output ceiling of the lesser of maximum throttle and hover throttle plus 5 percentage points.
+- `TAKEOFF`: firmware ramps from arm throttle with maximum throttle as the motor-output ceiling.
 - Liftoff requires a measured rise of 5 cm above the starting SRF05 height for 150 ms. If the sensor starts below range, its first usable reading establishes that starting height. The ramp pauses while confirming the rise.
 - Liftoff must be confirmed within the calculated ramp duration plus 1 second, capped at 10 seconds. Missing SRF05 data or failure to lift cannot extend this window. Very slow configured ramps may time out before reaching the ceiling.
-- After liftoff, altitude PID starts at the current height. Its target moves toward the requested height at 20 cm/s while the base throttle slews toward hover throttle. This limits the target's speed; actual climb speed depends on tuning and the aircraft.
+- After liftoff, applied collective seeds the hover estimate. Altitude PID starts at the current height and its target moves toward the requested height at 20 cm/s. The baseline is refined slowly during steady height hold, with I compensation where available. Actual motion depends on tuning and the aircraft.
 - `FLYING`: entered after the moving target reaches the final height and the aircraft stays within 5 cm for 500 ms (also within 0.15 m/s vertically when Vz is valid). The altitude controller continues without resetting or changing its target/base throttle at the state transition.
 - The total takeoff timeout includes the liftoff budget, requested height / 20 cm/s, and 5 seconds to settle. Altitude loss after the first usable reading remains an emergency motor stop, using the existing brief-dropout tolerance, not automatic landing.
-- Packet fields, byte offsets, and validation ranges are unchanged. Hover throttle should be measured; the legacy midpoint fallback is only an initial estimate.
+- The packet remains 64 bytes with unchanged offsets. Both firmware validators accept bounded legacy hover values, but the aircraft ignores them. Log header bit 3 identifies automatic learning; recorded configuration byte 44 is the current/last half-percent estimate. Hover throttle has no configuration-page control or label; the estimate remains available in flight-log review, with legacy archive interpretation preserved.
 
 The firmware rejects configuration changes while flying. Disable the configuration-send action while the desktop state is armed, and require an explicit DISARM first.
 
@@ -218,9 +218,11 @@ RemoteController transmits newline-delimited diagnostic text on the serial TX di
 
 These messages are not end-to-end acknowledgements. A LoRa TX-complete result only means the transmitter completed its radio operation; it does not prove that FlightController received or accepted the command. Until a bidirectional acknowledgement protocol is added, label UI state as locally requested/command sent rather than remotely confirmed.
 
-## Tests to add
+## Validation checklist
 
-Add automated tests around the protocol builder and connection service. Tests must not require physical motors or an armed aircraft.
+Check the protocol builder and connection service without physical motors or an
+armed aircraft. The automated suite passed before its removal at the owner's
+request; the items below remain useful for future verification.
 
 ### Packet tests
 
@@ -243,7 +245,7 @@ Add automated tests around the protocol builder and connection service. Tests mu
 - A simulated serial exception stops scheduling, marks the connection disconnected, and informs the UI state model.
 - Shutdown has a bounded duration even when a serial write stalls.
 
-Use an injectable serial transport interface so these tests can use a fake transport instead of a real COM port.
+The injectable serial transport interface allows verification without a real COM port.
 
 ## Acceptance criteria
 
@@ -255,7 +257,7 @@ The change is complete when:
 - disabling desktop heartbeat transmission is only possible while disarmed and displays a warning;
 - disconnect and shutdown paths do not silently leave the UI showing an armed/connected state;
 - configuration values are validated and encoded exactly as documented;
-- automated tests cover packet layout, scheduling, write serialization, and failure handling;
+- packet layout, scheduling, write serialization, and failure handling have been verified;
 - existing application features continue to work and the full Visual Studio solution builds without new warnings.
 
 For physical integration testing, remove propellers and use a bench-safe setup. First verify packet bytes with a fake or loopback transport, then verify that stopping desktop heartbeats causes the expected embedded DISARM when the firmware failsafes are enabled.

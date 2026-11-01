@@ -12,6 +12,8 @@ namespace DroneLogger.Classes
         private volatile bool heartbeatEnabled = true;
         private volatile bool isArmed;
         private volatile bool isTakeoffActive;
+        private volatile bool isLandingRequested;
+        private volatile bool isManualThrottleActive;
         private bool serialMode;
 
         public event EventHandler<ConnectionState>? ConnectionStateChanged;
@@ -19,6 +21,8 @@ namespace DroneLogger.Classes
 
         public bool IsArmed => isArmed;
         public bool IsTakeoffActive => isTakeoffActive;
+        public bool IsLandingRequested => isLandingRequested;
+        public bool IsManualThrottleActive => isManualThrottleActive;
         public bool IsConnected => serialMode
             ? logger?.IsLogPortOpen() == true
             : radioConnection.IsConnected;
@@ -65,6 +69,7 @@ namespace DroneLogger.Classes
                 }
 
                 EnsureConnected();
+                context.Dispatcher.Invoke(context.BeginSerialFlightRecording);
                 await SendPackageCoreAsync(
                     ProtocolPacketBuilder.BuildArmPacket(),
                     PacketPriority.Normal,
@@ -96,6 +101,8 @@ namespace DroneLogger.Classes
 
                 StopHeartbeat();
                 isTakeoffActive = false;
+                isManualThrottleActive = false;
+                isLandingRequested = false;
                 if (isArmed)
                 {
                     isArmed = false;
@@ -118,12 +125,41 @@ namespace DroneLogger.Classes
                 {
                     throw new InvalidOperationException("ARM the drone before takeoff.");
                 }
+                if (isLandingRequested)
+                {
+                    throw new InvalidOperationException("DISARM after landing before starting again.");
+                }
+                if (isManualThrottleActive)
+                {
+                    throw new InvalidOperationException("DISARM before automatic takeoff after manual throttle.");
+                }
 
                 await SendPackageCoreAsync(
                     ProtocolPacketBuilder.BuildTakeoffPacket(),
                     PacketPriority.Normal,
                     ct).ConfigureAwait(false);
                 isTakeoffActive = true;
+            }
+            finally
+            {
+                controlStateGate.Release();
+            }
+        }
+
+        public async Task LandAsync(CancellationToken ct = default)
+        {
+            await controlStateGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                EnsureConnected();
+                if (!isArmed) return;
+                await SendPackageCoreAsync(
+                    ProtocolPacketBuilder.BuildLandPacket(),
+                    PacketPriority.Normal,
+                    ct).ConfigureAwait(false);
+                // Keep heartbeat and the armed interlocks until explicit DISARM.
+                // Sending LAND is not an acknowledgement that motors stopped.
+                isLandingRequested = true;
             }
             finally
             {
@@ -150,6 +186,25 @@ namespace DroneLogger.Classes
             else if (isArmed)
             {
                 StartHeartbeat();
+            }
+        }
+
+        public async Task AdjustThrottleAsync(bool increase, CancellationToken ct = default)
+        {
+            await controlStateGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                EnsureConnected();
+                if (!isArmed || isLandingRequested)
+                    throw new InvalidOperationException("Live throttle requires ARM and no landing in progress.");
+                await SendPackageCoreAsync(
+                    ProtocolPacketBuilder.BuildThrottleAdjustmentPacket(increase),
+                    PacketPriority.Normal, ct).ConfigureAwait(false);
+                isManualThrottleActive = true;
+            }
+            finally
+            {
+                controlStateGate.Release();
             }
         }
 
@@ -393,6 +448,8 @@ namespace DroneLogger.Classes
         {
             StopHeartbeat();
             isTakeoffActive = false;
+            isManualThrottleActive = false;
+            isLandingRequested = false;
             if (isArmed)
             {
                 isArmed = false;
